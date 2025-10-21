@@ -1,6 +1,6 @@
-use crate::FfiDynamicEncoderParams;
+use crate::{sarsa_agent::SarsaAgent, sarsa_agent::SarsaAgentConfig, FfiDynamicEncoderParams};
 use alvr_common::{warn, APStats, Client, Interface, SlidingWindowAverage};
-use alvr_events::{EventType, HeuristicStats, NominalBitrateStats};
+use alvr_events::{EventType, HeuristicStats, NominalBitrateStats, SARSAStats};
 use alvr_session::{
     get_profile_config, settings_schema::Switch, AveragingStrategy, BitrateAdaptiveFramerateConfig,
     BitrateConfig, BitrateMode, WindowType,
@@ -13,6 +13,7 @@ use std::{
 
 use rand::distributions::Uniform;
 use rand::{thread_rng, Rng};
+use tch::Tensor;
 
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -34,6 +35,7 @@ pub struct BitrateManager {
     previous_config: Option<BitrateConfig>,
     update_needed: bool,
 
+    prev_target_bitrate_bps: f32,
     last_target_bitrate_bps: f32,
     update_interval_s: Duration,
 
@@ -41,7 +43,12 @@ pub struct BitrateManager {
     peak_throughput_average: SlidingWindowAverage<f32>,
     frame_interarrival_average: SlidingWindowAverage<f32>,
 
-    ap_stats_current: Option<APStats>,
+    sarsa_agent: Option<SarsaAgent>,
+    max_ap_history: usize,
+    ap_stats_buffer: VecDeque<APStats>,
+    prev_busy_time_ms: Option<f32>,
+    prev_active_time_ms: Option<f32>,
+    prev_state_vector: Option<Vec<f32>>,
 }
 impl BitrateManager {
     pub fn new(
@@ -52,6 +59,8 @@ impl BitrateManager {
         ewma_weight_val: Option<f32>,
         client_ip: IpAddr,
     ) -> Self {
+        let max_ap_history = max_history_size.unwrap_or(10);
+
         Self {
             client_ip: client_ip,
 
@@ -88,6 +97,7 @@ impl BitrateManager {
             previous_config: None,
             update_needed: true,
 
+            prev_target_bitrate_bps: initial_bitrate * 1e6,
             last_target_bitrate_bps: initial_bitrate * 1e6,
             update_interval_s: UPDATE_INTERVAL,
 
@@ -110,16 +120,17 @@ impl BitrateManager {
                 ewma_weight_val,
             ),
 
-            ap_stats_current: None,
+            sarsa_agent: None,
+            max_ap_history,
+            ap_stats_buffer: VecDeque::with_capacity(max_ap_history),
+            prev_busy_time_ms: Some(0.0),
+            prev_active_time_ms: Some(0.0),
+            prev_state_vector: None,
         }
     }
 
-    pub fn update_nominal_frame_interval(&mut self, fps: f32) {
-        self.nominal_frame_interval = Duration::from_secs_f32(1. / fps);
-    }
-
     pub fn find_client_interface(
-        &mut self,
+        &self,
         ap_stats: &APStats,
         client_ip: IpAddr,
     ) -> (Option<Interface>, Option<Client>) {
@@ -139,6 +150,238 @@ impl BitrateManager {
             }
         }
         (interface, client_ap_stats)
+    }
+
+    pub fn build_state_vector(&mut self) -> Tensor {
+        // Builds the current state vector for the SARSA agent, combining streaming and AP-level statistics.
+        // Features are normalized to [0,1] for stable NN training.
+
+        let sarsa_cfg = &self.sarsa_agent.as_ref().unwrap().cfg;
+
+        // 1. Normalized average NFR (frame delivery ratio)
+        let frame_interval_s = self.frame_interval_average.get_average().as_secs_f32();
+        let fps_tx_avg = if frame_interval_s > 0.0 {
+            1.0 / frame_interval_s
+        } else {
+            0.0
+        };
+        let fps_rx_avg = if self.frame_interarrival_average.get_average() > 0.0 {
+            1.0 / self.frame_interarrival_average.get_average()
+        } else {
+            0.0
+        };
+        let nfr_avg = if fps_tx_avg > 0.0 {
+            (fps_rx_avg / fps_tx_avg).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+
+        // 2. Normalized average VF-RTT
+        let rtt_avg = self.rtt_average.get_average().as_secs_f32().min(1.0);
+
+        // 3. Normalized bitrate utility
+        let bitrate_util =
+            (self.last_target_bitrate_bps / (sarsa_cfg.max_bitrate_mbps * 1e6)).clamp(0.0, 1.0);
+
+        // 4. Capacity margin
+        let est_capacity_bps = self.peak_throughput_average.get_average();
+        let capacity_margin = if est_capacity_bps > 0.0 {
+            ((est_capacity_bps - self.last_target_bitrate_bps) / est_capacity_bps).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        // 5. AP statistics
+        let (mcs_avg, other_mcs_avg, user_density_log, airtime_avg) = if !self
+            .ap_stats_buffer
+            .is_empty()
+        {
+            let mut mcs_sum = 0.0;
+            let mut other_mcs_sum = 0.0;
+            let mut mcs_count = 0.0;
+            let mut other_mcs_count = 0.0;
+            let mut total_clients_sum = 0.0;
+            let mut samples_count = 0.0;
+            let mut airtime_utilization = 0.0;
+
+            let last_idx = self.ap_stats_buffer.len().saturating_sub(1);
+            for (i, ap_stats) in self.ap_stats_buffer.iter().enumerate() {
+                let (iface_opt, client_opt) = self.find_client_interface(ap_stats, self.client_ip);
+
+                if let Some(client) = client_opt {
+                    if let Ok(mcs) = client.rx.mcs.parse::<f32>() {
+                        mcs_sum += mcs;
+                        mcs_count += 1.0;
+                    }
+                }
+
+                if let Some(iface) = iface_opt {
+                    // Average MCS of other clients
+                    for other_client in &iface.clients {
+                        if other_client.ip.parse::<IpAddr>().ok() != Some(self.client_ip) {
+                            if let Ok(mcs) = other_client.rx.mcs.parse::<f32>() {
+                                other_mcs_sum += mcs;
+                                other_mcs_count += 1.0;
+                            }
+                        }
+                    }
+
+                    // Number of users and airtime utilization
+                    let num_clients = iface.clients.len() as f32;
+                    total_clients_sum += num_clients;
+                    samples_count += 1.0;
+
+                    if i == last_idx {
+                        let busy_delta = iface.ch_busy_time_ms.parse::<f32>().unwrap_or(0.0)
+                            - self.prev_busy_time_ms.unwrap_or(0.0);
+                        let active_delta = iface.ch_active_time_ms.parse::<f32>().unwrap_or(1.0)
+                            - self.prev_active_time_ms.unwrap_or(0.0);
+
+                        airtime_utilization = if active_delta > 0.0 {
+                            (busy_delta / active_delta).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+
+                        self.prev_busy_time_ms = iface.ch_busy_time_ms.parse::<f32>().ok();
+                        self.prev_active_time_ms = iface.ch_active_time_ms.parse::<f32>().ok();
+                    }
+                }
+            }
+
+            self.ap_stats_buffer.clear();
+
+            let mcs_avg_norm = if mcs_count > 0.0 {
+                (mcs_sum / mcs_count) / 11.0
+            } else {
+                0.0
+            };
+            let other_mcs_avg_norm = if other_mcs_count > 0.0 {
+                (other_mcs_sum / other_mcs_count) / 11.0
+            } else {
+                0.0
+            };
+            let avg_users = if samples_count > 0.0 {
+                total_clients_sum / samples_count
+            } else {
+                0.0
+            };
+            let user_density_log = (avg_users.ln_1p() / (10.0_f32.ln_1p())).clamp(0.0, 1.0);
+
+            (
+                mcs_avg_norm,
+                other_mcs_avg_norm,
+                user_density_log,
+                airtime_utilization,
+            )
+        } else if let Some(prev) = &self.prev_state_vector {
+            let len = prev.len();
+            if len >= 8 {
+                (prev[len - 4], prev[len - 3], prev[len - 2], prev[len - 1])
+            } else {
+                (0.0, 0.0, 0.0, 0.0)
+            }
+        } else {
+            (0.0, 0.0, 0.0, 0.0)
+        };
+
+        // 6. Build the final state vector
+        let state_vec = vec![
+            nfr_avg,
+            rtt_avg,
+            bitrate_util,
+            capacity_margin,
+            mcs_avg,
+            other_mcs_avg,
+            user_density_log,
+            airtime_avg,
+        ];
+
+        assert_eq!(
+            state_vec.len(),
+            self.sarsa_agent.as_ref().unwrap().cfg.state_dim as usize,
+            "SARSA state_dim mismatch!"
+        );
+
+        self.prev_state_vector = Some(state_vec.clone());
+
+        warn!("SARSA state vector: {:?}", state_vec); // TODO: remove
+
+        let state_tensor = Tensor::f_from_slice(&state_vec)
+            .expect("Failed to create tensor from slice")
+            .unsqueeze(0);
+
+        state_tensor // shape [1, state_dim]
+    }
+
+    pub fn compute_reward(&mut self) -> f32 {
+        // Extract SARSA config
+        let sarsa_cfg = &self.sarsa_agent.as_ref().unwrap().cfg;
+
+        // 1. Bitrate utility (logarithmic)
+        let b_min = sarsa_cfg.min_bitrate_mbps;
+        let b_max = sarsa_cfg.max_bitrate_mbps;
+
+        let bitrate_utility = ((self.last_target_bitrate_bps / 1e6 / b_min).ln()
+            / (b_max / b_min).ln())
+        .clamp(0.0, 1.0);
+
+        // 2. NFR penalty
+        let frame_interval_s = self.frame_interval_average.get_average().as_secs_f32();
+        let fps_tx_avg = if frame_interval_s > 0.0 {
+            1.0 / frame_interval_s
+        } else {
+            0.0
+        };
+        let fps_rx_avg = if self.frame_interarrival_average.get_average() != 0.0 {
+            1.0 / self.frame_interarrival_average.get_average()
+        } else {
+            0.0
+        };
+        let nfr_avg = if fps_tx_avg > 0.0 {
+            fps_rx_avg / fps_tx_avg
+        } else {
+            1.0
+        };
+        let rho = sarsa_cfg.nfr_thresh;
+        let nfr_penalty = ((nfr_avg - rho) / rho).max(0.0);
+
+        // 3. RTT penalty
+        let rtt_avg_s = self.rtt_average.get_average().as_secs_f32().min(1.0);
+        let sigma_s = sarsa_cfg.rtt_thresh_ms / 1000.0;
+        let rtt_penalty = ((rtt_avg_s - sigma_s) / sigma_s).max(0.0);
+
+        // 4. Switch penalty
+        let switch_penalty =
+            ((self.last_target_bitrate_bps - self.prev_target_bitrate_bps).abs() / b_max).min(1.0);
+
+        // 5. Weighted sum
+        let alpha = 1.0; // weight for utility
+        let beta_nfr = 2.0; // NFR penalty weight
+        let beta_rtt = 1.5; // RTT penalty weight
+        let lambda_switch = 0.5; // switch penalty weight
+
+        let reward_raw = alpha * bitrate_utility
+            - beta_nfr * nfr_penalty
+            - beta_rtt * rtt_penalty
+            - lambda_switch * switch_penalty;
+
+        // 6. Clamp reward to theoretical min/max
+        // Minimum: utility=0, penalties=1.0
+        let reward_min = -(beta_nfr + beta_rtt + lambda_switch);
+        let reward_max = alpha; // utility=1.0, penalties=0
+        let reward_norm = (reward_raw - reward_min) / (reward_max - reward_min);
+
+        warn!(
+            "SARSA reward computation: bitrate_util {:.3}, nfr_penalty {:.3}, rtt_penalty {:.3}, switch_penalty {:.3}, reward {:.3}",
+            bitrate_utility, nfr_penalty, rtt_penalty, switch_penalty, reward_norm
+        ); // TODO: remove
+
+        reward_norm
+    }
+
+    pub fn update_nominal_frame_interval(&mut self, fps: f32) {
+        self.nominal_frame_interval = Duration::from_secs_f32(1. / fps);
     }
 
     // Note: This is used to calculate the framerate/frame interval. The frame present is the most
@@ -192,30 +435,11 @@ impl BitrateManager {
             .submit_sample(frame_interarrival_s);
     }
 
-    pub fn report_ap_statistics(
-        // TODO
-        &mut self,
-        ap_stats: &APStats,
-    ) {
-        self.ap_stats_current = Some(ap_stats.clone());
-
-        let client_ip = self.client_ip;
-
-        // TODO: move to ABR implementation
-        let (interface, client_ap_stats) = self.find_client_interface(&ap_stats, client_ip);
-        match interface {
-            Some(iface) => {
-                let _iface = iface; // TODO: remove
-                let _client_ap_stats = client_ap_stats; // TODO: remove
-                                                        //info!("Interface {:?}", iface);
-                                                        //info!("Number of clients {:?}", iface.clients.len());
-            }
-            None => warn!(
-                "No interface found for client IP {} in AP statistics",
-                client_ip
-            ),
-        };
-        //info!("Client AP stats {:?}", client_ap_stats);
+    pub fn report_ap_statistics(&mut self, ap_stats: &APStats) {
+        if self.ap_stats_buffer.len() >= self.max_ap_history {
+            self.ap_stats_buffer.pop_front();
+        }
+        self.ap_stats_buffer.push_back(ap_stats.clone());
     }
 
     pub fn report_frame_latencies(
@@ -334,6 +558,37 @@ impl BitrateManager {
                     self.update_interval_s = UPDATE_INTERVAL;
 
                     max_history_size = Some(*history_size);
+                }
+                BitrateMode::Sarsa {
+                    update_interval_s,
+                    max_bitrate_mbps,
+                    min_bitrate_mbps,
+                    nfr_thresh,
+                    rtt_thresh_ms,
+                    agent_config,
+                    ..
+                } => {
+                    self.update_interval_s = Duration::from_secs_f32(*update_interval_s);
+
+                    let state_dim = 8;
+                    let action_values = vec![
+                        -agent_config.action_step_percent / 100.0,
+                        0.0,
+                        agent_config.action_step_percent / 100.0,
+                    ];
+
+                    self.sarsa_agent = Some(SarsaAgent::new(SarsaAgentConfig {
+                        epsilon: agent_config.epsilon,
+                        gamma: agent_config.gamma,
+                        lr: agent_config.lr,
+                        state_dim,
+                        hidden_dim: agent_config.hidden_dim as i64,
+                        action_values: action_values,
+                        max_bitrate_mbps: *max_bitrate_mbps,
+                        min_bitrate_mbps: *min_bitrate_mbps,
+                        nfr_thresh: *nfr_thresh,
+                        rtt_thresh_ms: *rtt_thresh_ms,
+                    }));
                 }
                 _ => {
                     self.update_interval_s = UPDATE_INTERVAL;
@@ -571,9 +826,72 @@ impl BitrateManager {
 
                 bitrate_bps
             }
+            BitrateMode::Sarsa { .. } => {
+                // 1. Compute reward from last interval
+                let r_prev = self.compute_reward(); // reward associated with previous (s_{t-1}, a_{t-1})
+
+                // 2. Build current state (normalized feature vector)
+                let s_t = self.build_state_vector();
+
+                // 3. Select next action (ε-greedy)
+                let agent = self
+                    .sarsa_agent
+                    .as_mut()
+                    .expect("SARSA agent not initialized");
+                let (a_t_value, a_t_idx, is_greedy) = agent.select_action(&s_t);
+
+                // 4. If we have a stored previous transition, perform SARSA update:
+                //    update_transition(s_{t-1}, a_{t-1}, r_{t-1}, s_t, a_t)
+                if let Some(a_prev_idx) = agent.a_prev_idx {
+                    if let Some(s_prev_tensor) = agent.s_prev.take() {
+                        agent.update(&s_prev_tensor, a_prev_idx, r_prev, &s_t, a_t_idx);
+                    }
+                } else {
+                    // No previous transition available (first step), skipping update this round and only store the current transition below.
+                }
+
+                // 5. Compute new bitrate
+                let bitrate_bps = ((1.0 + a_t_value) * self.last_target_bitrate_bps).clamp(
+                    agent.cfg.min_bitrate_mbps as f32 * 1e6,
+                    agent.cfg.max_bitrate_mbps as f32 * 1e6,
+                );
+
+                // previous state
+                let s_prev_vec: Option<Vec<f32>> = agent.s_prev.as_ref().map(|prev| {
+                    Vec::try_from(prev.shallow_clone()).expect("s_prev tensor must be 1D f32")
+                });
+
+                // current state
+                let s_t_vec: Vec<f32> =
+                    Vec::try_from(s_t.shallow_clone()).expect("s_t tensor must be 1D f32");
+
+                let sarsa_stats = SARSAStats {
+                    s_prev: s_prev_vec.unwrap_or_else(|| vec![]), // previous state
+                    a_prev_idx: agent.a_prev_idx,                 // previous action index
+                    r_prev,                                       // previous reward
+                    s_t: s_t_vec,                                 // current state
+                    a_t_idx,                                      // current action index
+                    a_t_value,                                    // current action value
+                    is_greedy: is_greedy, // whether current action is greedy
+                    requested_bitrate_bps: bitrate_bps, // requested bitrate
+                };
+                alvr_events::send_event(EventType::SARSAStats(sarsa_stats));
+
+                warn!(
+                    "SARSA: s_prev = {:?}, a_prev = {:?}, r_prev = {}, s_t = {:?}, a_t = {}, a_t_value = {:.2}, is_greedy = {}, bitrate_bps = {:.2}",
+                    agent.s_prev, agent.a_prev_idx, r_prev, s_t, a_t_idx, a_t_value, is_greedy, bitrate_bps
+                );
+
+                // 6. Store current state and action inside the agent for the next update
+                agent.s_prev = Some(s_t);
+                agent.a_prev_idx = Some(a_t_idx);
+
+                bitrate_bps
+            }
         };
 
         stats.requested_bps = bitrate_bps;
+        self.prev_target_bitrate_bps = self.last_target_bitrate_bps;
         self.last_target_bitrate_bps = bitrate_bps;
 
         let frame_interval = if config.adapt_to_framerate.enabled() {

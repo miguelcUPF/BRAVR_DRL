@@ -11,6 +11,7 @@ mod sockets;
 mod statistics;
 mod tracking;
 mod web_server;
+mod sarsa_agent;
 
 #[allow(
     non_camel_case_types,

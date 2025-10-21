@@ -125,6 +125,20 @@ pub struct HeuristicStats {
     pub requested_bitrate_bps: f32,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct SARSAStats {
+    pub s_prev: Vec<f32>,          // Previous state (s_{t-1})
+    pub a_prev_idx: Option<i64>, // Previous action index (a_{t-1})
+    pub r_prev: f32,             // Previous reward (r_{t-1})
+
+    pub s_t: Vec<f32>,   // Current state (s_t)
+    pub a_t_idx: i64,    // Current action index (a_t)
+    pub a_t_value: f32,  // Current action value (a_t)
+    pub is_greedy: bool, // Whether the current action was greedy (true) or exploratory (false)
+
+    pub requested_bitrate_bps: f32, // Requested bitrate at this step
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TrackingEvent {
     pub head_motion: Option<DeviceMotion>,
@@ -159,6 +173,7 @@ pub enum EventType {
     GraphStatistics(GraphStatistics),
     GraphNetworkStatistics(GraphNetworkStatistics),
     HeuristicStats(HeuristicStats),
+    SARSAStats(SARSAStats),
     APStatistics(APStats),
     Tracking(Box<TrackingEvent>),
     Buttons(Vec<ButtonEvent>),

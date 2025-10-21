@@ -345,6 +345,72 @@ pub enum NestVrProfile {
     MinMax,
 }
 
+#[derive(SettingsSchema, Serialize, Deserialize, Debug, Copy, Clone, PartialEq)]
+#[schema(gui = "button_group")]
+pub enum FetchSide {
+    #[schema(strings(display_name = "Server"))]
+    Server,
+
+    #[schema(strings(display_name = "Client"))]
+    Client {
+        #[schema(strings(
+            display_name = "Automatic AP IP@",
+            help = "Automatically discovers the access point IP address. If enabled, manual input is ignored.",
+        ))]
+        #[schema(flag = "steamvr-restart")]
+        auto_ap_ip: bool,
+    },
+}
+
+#[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HTTPserver {
+    #[schema(strings(display_name = "HTTP server port",))]
+    #[schema(flag = "steamvr-restart")]
+    #[schema(gui(slider(min = 1, max = 65535)))]
+    pub http_port: u16,
+
+    #[schema(strings(display_name = "HTTP request interval",))]
+    #[schema(flag = "steamvr-restart")]
+    #[schema(gui(slider(min = 0.1, max = 10.0, step = 0.1)), suffix = "seconds")]
+    pub request_interval: f32,
+
+    #[schema(strings(display_name = "Fetch from",))]
+    #[schema(flag = "steamvr-restart")]
+    pub fetch_from: FetchSide,
+
+    #[schema(strings(display_name = "Manual AP IP@",))]
+    #[schema(flag = "steamvr-restart")]
+    pub ap_ip: String,
+}
+
+#[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SARSAConfig {
+    #[schema(strings(display_name = "Exploration rate (ε)"))]
+    #[schema(flag = "steamvr-restart")]
+    #[schema(gui(slider(min = 0.0, max = 1.0, step = 0.01)))]
+    pub epsilon: f32,
+
+    #[schema(strings(display_name = "Discount factor (γ)"))]
+    #[schema(flag = "steamvr-restart")]
+    #[schema(gui(slider(min = 0.0, max = 1.0, step = 0.01)))]
+    pub gamma: f32,
+
+    #[schema(strings(display_name = "Learning rate"))]
+    #[schema(flag = "steamvr-restart")]
+    #[schema(gui(slider(min = 1e-5, max = 1e-2, logarithmic)))]
+    pub lr: f64,
+
+    #[schema(strings(display_name = "Hidden layer size"))]
+    #[schema(flag = "steamvr-restart")]
+    #[schema(gui(slider(min = 1, max = 256, step = 1)))]
+    pub hidden_dim: u64,
+
+    #[schema(strings(display_name = "Bitrate change steps (±%)"))]
+    #[schema(flag = "steamvr-restart")]
+    #[schema(gui(slider(min = 1.0, max = 25.0, step = 1.0)))]
+    pub action_step_percent: f32,
+}
+
 #[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
 #[schema(gui = "button_group")]
 pub enum BitrateMode {
@@ -387,7 +453,7 @@ pub enum BitrateMode {
         #[schema(strings(display_name = "Statistics history size"))]
         history_size: usize,
     },
-
+    #[schema(collapsible)]
     NestVr {
         #[schema(strings(display_name = "Maximum bitrate (B_max)"))]
         #[schema(flag = "real-time")]
@@ -405,6 +471,47 @@ pub enum BitrateMode {
         averaging_strategy: AveragingStrategy,
         #[schema(strings(display_name = "Profile"))]
         nest_vr_profile: NestVrProfile,
+    },
+    #[schema(collapsible, strings(display_name = "SARSA"))]
+    Sarsa {
+        #[schema(strings(
+            display_name = "AP's HTTP Server",
+            help = "Request network statistics from an access point's HTTP server"
+        ))]
+        #[schema(flag = "steamvr-restart")]
+        http_server: HTTPserver,
+
+        #[schema(strings(display_name = "Adjustment period (s)"))]
+        #[schema(flag = "steamvr-restart")]
+        #[schema(gui(slider(min = 0.1, max = 1.0, logarithmic)), suffix = "s")]
+        update_interval_s: f32,
+
+        #[schema(strings(display_name = "Maximum bitrate"))]
+        #[schema(flag = "steamvr-restart")]
+        #[schema(gui(slider(min = 1.0, max = 1000.0, logarithmic)), suffix = "Mbps")]
+        max_bitrate_mbps: f32,
+
+        #[schema(strings(display_name = "Minimum bitrate"))]
+        #[schema(flag = "steamvr-restart")]
+        #[schema(gui(slider(min = 1.0, max = 1000.0, logarithmic)), suffix = "Mbps")]
+        min_bitrate_mbps: f32,
+
+        #[schema(strings(display_name = "Initial bitrate"))]
+        #[schema(gui(slider(min = 1.0, max = 1000.0, logarithmic)), suffix = "Mbps")]
+        initial_bitrate_mbps: f32,
+
+        #[schema(strings(display_name = "NFR threshold (rho)"))]
+        #[schema(flag = "real-time")]
+        #[schema(gui(slider(min = 0.1, max = 1.0, logarithmic)))]
+        nfr_thresh: f32,
+
+        #[schema(strings(display_name = "VF-RTT threshold (sigma)"))]
+        #[schema(flag = "real-time")]
+        #[schema(gui(slider(min = 1., max = 200.0, logarithmic)), suffix = " ms")]
+        rtt_thresh_ms: f32,
+
+        #[schema(strings(display_name = "SARSA agent configuration"))]
+        agent_config: SARSAConfig,
     },
 }
 
@@ -1218,44 +1325,6 @@ pub struct Patches {
     pub linux_async_reprojection: bool,
 }
 
-#[derive(SettingsSchema, Serialize, Deserialize, Debug, Copy, Clone, PartialEq)]
-#[schema(gui = "button_group")]
-pub enum FetchSide {
-    #[schema(strings(display_name = "Server"))]
-    Server,
-
-    #[schema(strings(display_name = "Client"))]
-    Client {
-        #[schema(strings(
-            display_name = "Automatic AP IP@",
-            help = "Automatically discovers the access point IP address. If enabled, manual input is ignored.",
-        ))]
-        #[schema(flag = "steamvr-restart")]
-        auto_ap_ip: bool,
-    },
-}
-
-#[derive(SettingsSchema, Serialize, Deserialize, Clone)]
-pub struct HTTPserver {
-    #[schema(strings(display_name = "HTTP server port",))]
-    #[schema(flag = "steamvr-restart")]
-    #[schema(gui(slider(min = 1, max = 65535)))]
-    pub http_port: u16,
-
-    #[schema(strings(display_name = "HTTP request interval",))]
-    #[schema(flag = "steamvr-restart")]
-    #[schema(gui(slider(min = 0.1, max = 10.0, step = 0.1)), suffix = "seconds")]
-    pub request_interval: f32,
-
-    #[schema(strings(display_name = "Fetch from",))]
-    #[schema(flag = "steamvr-restart")]
-    pub fetch_from: FetchSide,
-
-    #[schema(strings(display_name = "Manual AP IP@",))]
-    #[schema(flag = "steamvr-restart")]
-    pub ap_ip: String,
-}
-
 #[derive(SettingsSchema, Serialize, Deserialize, Clone)]
 pub struct CustomConfig {
     #[schema(strings(
@@ -1277,13 +1346,6 @@ pub struct CustomConfig {
     #[schema(flag = "real-time")]
     #[schema(gui(slider(min = 1.0, max = 120.0)), suffix = "Hz")]
     pub update_server_fps: Switch<f32>,
-
-    #[schema(strings(
-        display_name = "AP's HTTP Server",
-        help = "Request network statistics from an access point's HTTP server"
-    ))]
-    #[schema(flag = "steamvr-restart")]
-    pub http_server: Switch<HTTPserver>,
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone)]
@@ -1370,6 +1432,7 @@ pub fn session_settings_default() -> SettingsDefault {
                         history_size: 256,
                     },
                     NestVr: BitrateModeNestVrDefault {
+                        gui_collapsed: true,
                         max_bitrate_mbps: 100.0,
                         min_bitrate_mbps: 10.0,
                         initial_bitrate_mbps: 100.0,
@@ -1412,7 +1475,32 @@ pub fn session_settings_default() -> SettingsDefault {
                             variant: NestVrProfileDefaultVariant::Custom,
                         },
                     },
-                    variant: BitrateModeDefaultVariant::NestVr,
+                    Sarsa: BitrateModeSarsaDefault {
+                        gui_collapsed: true,
+                        http_server: HTTPserverDefault {
+                            ap_ip: "192.168.1.1".to_string(),
+                            http_port: 8080,
+                            request_interval: 1.,
+                            fetch_from: FetchSideDefault {
+                                Client: FetchSideClientDefault { auto_ap_ip: true },
+                                variant: FetchSideDefaultVariant::Server,
+                            },
+                        },
+                        update_interval_s: 0.2,
+                        max_bitrate_mbps: 100.0,
+                        min_bitrate_mbps: 10.0,
+                        initial_bitrate_mbps: 50.0,
+                        nfr_thresh: 0.95,
+                        rtt_thresh_ms: 22.0,
+                        agent_config: SARSAConfigDefault {
+                            epsilon: 0.1,
+                            gamma: 0.95,
+                            lr: 1e-3,
+                            hidden_dim: 64,
+                            action_step_percent: 10.0,
+                        },
+                    },
+                    variant: BitrateModeDefaultVariant::Sarsa,
                 },
                 adapt_to_framerate: SwitchDefault {
                     enabled: false,
@@ -1840,18 +1928,6 @@ pub fn session_settings_default() -> SettingsDefault {
             update_server_fps: SwitchDefault {
                 enabled: false,
                 content: 60.,
-            },
-            http_server: SwitchDefault {
-                enabled: false,
-                content: HTTPserverDefault {
-                    ap_ip: "192.168.1.1".to_string(),
-                    http_port: 8080,
-                    request_interval: 1.,
-                    fetch_from: FetchSideDefault {
-                        Client: FetchSideClientDefault { auto_ap_ip: true },
-                        variant: FetchSideDefaultVariant::Server,
-                    },
-                },
             },
         },
     }

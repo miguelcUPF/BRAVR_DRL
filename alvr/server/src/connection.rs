@@ -606,6 +606,12 @@ fn connection_pipeline(
         BitrateMode::Adaptive { history_size, .. } => {
             max_history_size = Some(*history_size);
         }
+        BitrateMode::Sarsa {
+            initial_bitrate_mbps,
+            ..
+        } => {
+            initial_bitrate = *initial_bitrate_mbps;
+        }
         _ => {}
     }
 
@@ -1120,7 +1126,9 @@ fn connection_pipeline(
         let control_sender = Arc::clone(&control_sender);
         move || {
             let server_read_lock = SERVER_DATA_MANAGER.read();
-            if let Switch::Enabled(http_server) = &server_read_lock.settings().custom.http_server {
+            if let BitrateMode::Sarsa { http_server, .. } =
+                &server_read_lock.settings().video.bitrate.mode
+            {
                 let ap_ip = http_server.ap_ip.clone();
                 let http_port = http_server.http_port;
                 let request_interval = http_server.request_interval;
@@ -1179,8 +1187,6 @@ fn connection_pipeline(
                         ))
                         .ok();
                 }
-            } else {
-                info!("HTTP server is disabled.");
             }
         }
     });
