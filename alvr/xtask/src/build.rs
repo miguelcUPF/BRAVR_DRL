@@ -194,6 +194,52 @@ pub fn build_streamer(
                 sh.copy_file(lib_path.clone(), bin_dir).unwrap();
             }
         }
+
+        // copy tch / libtorch dependencies (for machine learning code)
+        {
+            use std::process::Command;
+
+            // Try to detect Python PyTorch lib folder
+            let torch_lib_dir: PathBuf = {
+                let output = Command::new("python")
+                    .args(&[
+                        "-c",
+                        "import torch, os; print(os.path.join(torch.__path__[0], 'lib'))",
+                    ])
+                    .output()
+                    .expect("Failed to execute Python to detect torch lib folder");
+
+                if !output.status.success() {
+                    println!("cargo:warning=Could not detect torch lib folder via Python. Falling back to default LIBTORCH_PATH.");
+                    PathBuf::from(
+                        std::env::var("LIBTORCH_PATH")
+                            .unwrap_or_else(|_| "D:/libtorch".to_string()),
+                    )
+                    .join("lib")
+                } else {
+                    String::from_utf8_lossy(&output.stdout).trim().into()
+                }
+            };
+
+            let bin_dir = &build_layout.openvr_driver_lib_dir();
+            let dlls = [
+                "torch_cpu.dll",
+                "c10.dll",
+                //"libiomp5md.dll",
+                //"torch_cuda.dll",
+            ];
+
+            for dll in dlls {
+                let src = torch_lib_dir.join(dll);
+                let dst = bin_dir.join(dll);
+                if src.exists() {
+                    println!("Copying {dll} from {:?}", src);
+                    sh.copy_file(&src, &dst).unwrap();
+                } else {
+                    println!("cargo:warning=Missing libtorch dependency: {dll}");
+                }
+            }
+        }
     } else if cfg!(target_os = "linux") {
         // build compositor wrapper
         let _push_guard = sh.push_dir(afs::crate_dir("vrcompositor_wrapper"));
