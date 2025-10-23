@@ -225,7 +225,7 @@ pub fn build_streamer(
             let dlls = [
                 "torch_cpu.dll",
                 "c10.dll",
-                //"libiomp5md.dll",
+                "libiomp5md.dll",
                 //"torch_cuda.dll",
             ];
 
