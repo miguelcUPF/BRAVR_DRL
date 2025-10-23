@@ -155,7 +155,6 @@ impl BitrateManager {
     pub fn build_state_vector(&mut self) -> Tensor {
         // Builds the current state vector for the SARSA agent, combining streaming and AP-level statistics.
         // Features are normalized to [0,1] for stable NN training.
-
         let sarsa_cfg = &self.sarsa_agent.as_ref().unwrap().cfg;
 
         // 1. Normalized average NFR (frame delivery ratio)
@@ -305,8 +304,6 @@ impl BitrateManager {
 
         self.prev_state_vector = Some(state_vec.clone());
 
-        warn!("SARSA state vector: {:?}", state_vec); // TODO: remove
-
         let state_tensor = Tensor::f_from_slice(&state_vec)
             .expect("Failed to create tensor from slice")
             .unsqueeze(0);
@@ -314,16 +311,16 @@ impl BitrateManager {
         state_tensor // shape [1, state_dim]
     }
 
-    pub fn compute_reward(&mut self) -> f32 {
+    pub fn compute_reward(&mut self) -> (f32, f32, f32, f32, f32) {
         // Extract SARSA config
         let sarsa_cfg = &self.sarsa_agent.as_ref().unwrap().cfg;
 
         // 1. Bitrate utility (logarithmic)
-        let b_min = sarsa_cfg.min_bitrate_mbps;
-        let b_max = sarsa_cfg.max_bitrate_mbps;
+        let b_min_bps = sarsa_cfg.min_bitrate_mbps * 1e6;
+        let b_max_bps = sarsa_cfg.max_bitrate_mbps * 1e6;
 
-        let bitrate_utility = ((self.last_target_bitrate_bps / 1e6 / b_min).ln()
-            / (b_max / b_min).ln())
+        let bitrate_utility = ((self.last_target_bitrate_bps / b_min_bps).ln()
+            / (b_max_bps / b_min_bps).ln())
         .clamp(0.0, 1.0);
 
         // 2. NFR penalty
@@ -339,21 +336,23 @@ impl BitrateManager {
             0.0
         };
         let nfr_avg = if fps_tx_avg > 0.0 {
-            fps_rx_avg / fps_tx_avg
+            (fps_rx_avg / fps_tx_avg).clamp(0.0, 1.0)
         } else {
             1.0
         };
         let rho = sarsa_cfg.nfr_thresh;
-        let nfr_penalty = ((nfr_avg - rho) / rho).max(0.0);
+        let nfr_penalty = ((rho - nfr_avg) / rho).max(0.0).min(1.0);
 
         // 3. RTT penalty
         let rtt_avg_s = self.rtt_average.get_average().as_secs_f32().min(1.0);
         let sigma_s = sarsa_cfg.rtt_thresh_ms / 1000.0;
-        let rtt_penalty = ((rtt_avg_s - sigma_s) / sigma_s).max(0.0);
+        let delta = ((rtt_avg_s - sigma_s) / (2.0 * sigma_s)).max(0.0); // Compute scaled difference considering k=2.0
+        let rtt_penalty = 1.0 - (-delta).exp(); // Exponential penalty
 
         // 4. Switch penalty
-        let switch_penalty =
-            ((self.last_target_bitrate_bps - self.prev_target_bitrate_bps).abs() / b_max).min(1.0);
+        let switch_penalty = ((self.last_target_bitrate_bps - self.prev_target_bitrate_bps).abs()
+            / b_max_bps)
+            .min(1.0);
 
         // 5. Weighted sum
         let alpha = 1.0; // weight for utility
@@ -366,18 +365,13 @@ impl BitrateManager {
             - beta_rtt * rtt_penalty
             - lambda_switch * switch_penalty;
 
-        // 6. Clamp reward to theoretical min/max
-        // Minimum: utility=0, penalties=1.0
-        let reward_min = -(beta_nfr + beta_rtt + lambda_switch);
-        let reward_max = alpha; // utility=1.0, penalties=0
-        let reward_norm = (reward_raw - reward_min) / (reward_max - reward_min);
-
-        warn!(
-            "SARSA reward computation: bitrate_util {:.3}, nfr_penalty {:.3}, rtt_penalty {:.3}, switch_penalty {:.3}, reward {:.3}",
-            bitrate_utility, nfr_penalty, rtt_penalty, switch_penalty, reward_norm
-        ); // TODO: remove
-
-        reward_norm
+        (
+            reward_raw,
+            bitrate_utility,
+            nfr_penalty,
+            rtt_penalty,
+            switch_penalty,
+        )
     }
 
     pub fn update_nominal_frame_interval(&mut self, fps: f32) {
@@ -828,7 +822,7 @@ impl BitrateManager {
             }
             BitrateMode::Sarsa { .. } => {
                 // 1. Compute reward from last interval
-                let r_prev = self.compute_reward(); // reward associated with previous (s_{t-1}, a_{t-1})
+                let (r_prev, u, nfr, rtt, sw) = self.compute_reward(); // reward associated with previous (s_{t-1}, a_{t-1})
 
                 // 2. Build current state (normalized feature vector)
                 let s_t = self.build_state_vector();
@@ -843,7 +837,7 @@ impl BitrateManager {
                 // 4. If we have a stored previous transition, perform SARSA update:
                 //    update_transition(s_{t-1}, a_{t-1}, r_{t-1}, s_t, a_t)
                 if let Some(a_prev_idx) = agent.a_prev_idx {
-                    if let Some(s_prev_tensor) = agent.s_prev.take() {
+                    if let Some(s_prev_tensor) = agent.s_prev.as_ref().map(|t| t.shallow_clone()) {
                         agent.update(&s_prev_tensor, a_prev_idx, r_prev, &s_t, a_t_idx);
                     }
                 } else {
@@ -858,32 +852,33 @@ impl BitrateManager {
 
                 // previous state
                 let s_prev_vec: Option<Vec<f32>> = agent.s_prev.as_ref().map(|prev| {
-                    Vec::try_from(prev.shallow_clone()).expect("s_prev tensor must be 1D f32")
+                    Vec::try_from(prev.view([-1]).shallow_clone())
+                        .expect("s_prev tensor must be 1D f32")
                 });
+                let s_prev_str = match &s_prev_vec {
+                    Some(v) => format!("{:?}", v),
+                    None => "[]".to_string(),
+                };
 
-                // current state
-                let s_t_vec: Vec<f32> =
-                    Vec::try_from(s_t.shallow_clone()).expect("s_t tensor must be 1D f32");
+                let s_t_vec: Vec<f32> = Vec::try_from(s_t.view([-1]).shallow_clone())
+                    .expect("s_t tensor must be 1D f32");
+                let s_t_str = format!("{:?}", s_t_vec);
 
                 let sarsa_stats = SARSAStats {
-                    s_prev: s_prev_vec.unwrap_or_else(|| vec![]), // previous state
-                    a_prev_idx: agent.a_prev_idx,                 // previous action index
-                    r_prev,                                       // previous reward
-                    s_t: s_t_vec,                                 // current state
-                    a_t_idx,                                      // current action index
-                    a_t_value,                                    // current action value
-                    is_greedy: is_greedy, // whether current action is greedy
-                    requested_bitrate_bps: bitrate_bps, // requested bitrate
+                    s_prev: s_prev_str,                   // previous state
+                    a_prev_idx: agent.a_prev_idx,         // previous action index
+                    r_prev,                               // previous reward
+                    r_prev_components: (u, nfr, rtt, sw), // previous reward components
+                    s_t: s_t_str,                         // current state
+                    a_t_idx,                              // current action index
+                    a_t_value,                            // current action value
+                    is_greedy: is_greedy,                 // whether current action is greedy
+                    requested_bitrate_bps: bitrate_bps,   // requested bitrate
                 };
                 alvr_events::send_event(EventType::SARSAStats(sarsa_stats));
 
-                warn!(
-                    "SARSA: s_prev = {:?}, a_prev = {:?}, r_prev = {}, s_t = {:?}, a_t = {}, a_t_value = {:.2}, is_greedy = {}, bitrate_bps = {:.2}",
-                    agent.s_prev, agent.a_prev_idx, r_prev, s_t, a_t_idx, a_t_value, is_greedy, bitrate_bps
-                );
-
                 // 6. Store current state and action inside the agent for the next update
-                agent.s_prev = Some(s_t);
+                agent.s_prev = Some(s_t.shallow_clone());
                 agent.a_prev_idx = Some(a_t_idx);
 
                 bitrate_bps

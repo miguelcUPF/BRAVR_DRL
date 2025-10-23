@@ -127,11 +127,12 @@ pub struct HeuristicStats {
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct SARSAStats {
-    pub s_prev: Vec<f32>,          // Previous state (s_{t-1})
+    pub s_prev: String,          // Previous state (s_{t-1})
     pub a_prev_idx: Option<i64>, // Previous action index (a_{t-1})
     pub r_prev: f32,             // Previous reward (r_{t-1})
+    pub r_prev_components: (f32, f32, f32, f32),  // Previous reward components (bitrate_util, nfr_penalty, rtt_penalty, switch_penalty)
 
-    pub s_t: Vec<f32>,   // Current state (s_t)
+    pub s_t: String,     // Current state (s_t)
     pub a_t_idx: i64,    // Current action index (a_t)
     pub a_t_value: f32,  // Current action value (a_t)
     pub is_greedy: bool, // Whether the current action was greedy (true) or exploratory (false)
