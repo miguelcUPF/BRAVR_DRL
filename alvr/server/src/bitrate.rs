@@ -182,25 +182,10 @@ impl BitrateManager {
         let bitrate_util =
             (self.last_target_bitrate_bps / (sarsa_cfg.max_bitrate_mbps * 1e6)).clamp(0.0, 1.0);
 
-        // 4. Capacity margin
-        let est_capacity_bps = self.peak_throughput_average.get_average();
-        let capacity_margin = if est_capacity_bps > 0.0 {
-            ((est_capacity_bps - self.last_target_bitrate_bps) / est_capacity_bps).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-
         // 5. AP statistics
-        let (mcs_avg, other_mcs_avg, user_density_log, airtime_avg) = if !self
-            .ap_stats_buffer
-            .is_empty()
-        {
+        let (mcs_avg, airtime_avg) = if !self.ap_stats_buffer.is_empty() {
             let mut mcs_sum = 0.0;
-            let mut other_mcs_sum = 0.0;
             let mut mcs_count = 0.0;
-            let mut other_mcs_count = 0.0;
-            let mut total_clients_sum = 0.0;
-            let mut samples_count = 0.0;
             let mut airtime_utilization = 0.0;
 
             let last_idx = self.ap_stats_buffer.len().saturating_sub(1);
@@ -215,21 +200,7 @@ impl BitrateManager {
                 }
 
                 if let Some(iface) = iface_opt {
-                    // Average MCS of other clients
-                    for other_client in &iface.clients {
-                        if other_client.ip.parse::<IpAddr>().ok() != Some(self.client_ip) {
-                            if let Ok(mcs) = other_client.rx.mcs.parse::<f32>() {
-                                other_mcs_sum += mcs;
-                                other_mcs_count += 1.0;
-                            }
-                        }
-                    }
-
-                    // Number of users and airtime utilization
-                    let num_clients = iface.clients.len() as f32;
-                    total_clients_sum += num_clients;
-                    samples_count += 1.0;
-
+                    // Airtime utilization
                     if i == last_idx {
                         let busy_delta = iface.ch_busy_time_ms.parse::<f32>().unwrap_or(0.0)
                             - self.prev_busy_time_ms.unwrap_or(0.0);
@@ -255,46 +226,21 @@ impl BitrateManager {
             } else {
                 0.0
             };
-            let other_mcs_avg_norm = if other_mcs_count > 0.0 {
-                (other_mcs_sum / other_mcs_count) / 11.0
-            } else {
-                0.0
-            };
-            let avg_users = if samples_count > 0.0 {
-                total_clients_sum / samples_count
-            } else {
-                0.0
-            };
-            let user_density_log = (avg_users.ln_1p() / (10.0_f32.ln_1p())).clamp(0.0, 1.0);
 
-            (
-                mcs_avg_norm,
-                other_mcs_avg_norm,
-                user_density_log,
-                airtime_utilization,
-            )
+            (mcs_avg_norm, airtime_utilization)
         } else if let Some(prev) = &self.prev_state_vector {
             let len = prev.len();
-            if len >= 8 {
-                (prev[len - 4], prev[len - 3], prev[len - 2], prev[len - 1])
+            if len >= 5 {
+                (prev[len - 2], prev[len - 1])
             } else {
-                (0.0, 0.0, 0.0, 0.0)
+                (0.0, 0.0)
             }
         } else {
-            (0.0, 0.0, 0.0, 0.0)
+            (0.0, 0.0)
         };
 
         // 6. Build the final state vector
-        let state_vec = vec![
-            nfr_avg,
-            rtt_avg,
-            bitrate_util,
-            capacity_margin,
-            mcs_avg,
-            other_mcs_avg,
-            user_density_log,
-            airtime_avg,
-        ];
+        let state_vec = vec![nfr_avg, rtt_avg, bitrate_util, mcs_avg, airtime_avg];
 
         assert_eq!(
             state_vec.len(),
@@ -311,7 +257,7 @@ impl BitrateManager {
         state_tensor // shape [1, state_dim]
     }
 
-    pub fn compute_reward(&mut self) -> (f32, f32, f32, f32, f32) {
+    pub fn compute_reward(&mut self) -> f32 {
         // Extract SARSA config
         let sarsa_cfg = &self.sarsa_agent.as_ref().unwrap().cfg;
 
@@ -319,11 +265,11 @@ impl BitrateManager {
         let b_min_bps = sarsa_cfg.min_bitrate_mbps * 1e6;
         let b_max_bps = sarsa_cfg.max_bitrate_mbps * 1e6;
 
-        let bitrate_utility = ((self.last_target_bitrate_bps / b_min_bps).ln()
-            / (b_max_bps / b_min_bps).ln())
-        .clamp(0.0, 1.0);
+        let bitrate_norm = ((self.last_target_bitrate_bps as f32) - b_min_bps as f32)
+            / ((b_max_bps - b_min_bps) as f32);
+        let bitrate_norm = bitrate_norm.clamp(0.0, 1.0);
 
-        // 2. NFR penalty
+        // 2. NFR
         let frame_interval_s = self.frame_interval_average.get_average().as_secs_f32();
         let fps_tx_avg = if frame_interval_s > 0.0 {
             1.0 / frame_interval_s
@@ -341,37 +287,20 @@ impl BitrateManager {
             1.0
         };
         let rho = sarsa_cfg.nfr_thresh;
-        let nfr_penalty = ((rho - nfr_avg) / rho).max(0.0).min(1.0);
 
         // 3. RTT penalty
         let rtt_avg_s = self.rtt_average.get_average().as_secs_f32().min(1.0);
         let sigma_s = sarsa_cfg.rtt_thresh_ms / 1000.0;
-        let delta = ((rtt_avg_s - sigma_s) / (2.0 * sigma_s)).max(0.0); // Compute scaled difference considering k=2.0
-        let rtt_penalty = 1.0 - (-delta).exp(); // Exponential penalty
 
-        // 4. Switch penalty
-        let switch_penalty = ((self.last_target_bitrate_bps - self.prev_target_bitrate_bps).abs()
-            / b_max_bps)
-            .min(1.0);
+        let penalty = if nfr_avg < rho || rtt_avg_s > sigma_s {
+            1.0
+        } else {
+            0.0
+        };
 
-        // 5. Weighted sum
-        let alpha = 1.0; // weight for utility
-        let beta_nfr = 2.0; // NFR penalty weight
-        let beta_rtt = 1.5; // RTT penalty weight
-        let lambda_switch = 0.5; // switch penalty weight
+        let reward = bitrate_norm - penalty;
 
-        let reward_raw = alpha * bitrate_utility
-            - beta_nfr * nfr_penalty
-            - beta_rtt * rtt_penalty
-            - lambda_switch * switch_penalty;
-
-        (
-            reward_raw,
-            bitrate_utility,
-            nfr_penalty,
-            rtt_penalty,
-            switch_penalty,
-        )
+        reward
     }
 
     pub fn update_nominal_frame_interval(&mut self, fps: f32) {
@@ -564,7 +493,7 @@ impl BitrateManager {
                 } => {
                     self.update_interval_s = Duration::from_secs_f32(*update_interval_s);
 
-                    let state_dim = 8;
+                    let state_dim = 5;
                     let action_values = vec![
                         -agent_config.action_step_percent / 100.0,
                         0.0,
@@ -822,7 +751,7 @@ impl BitrateManager {
             }
             BitrateMode::Sarsa { .. } => {
                 // 1. Compute reward from last interval
-                let (r_prev, u, nfr, rtt, sw) = self.compute_reward(); // reward associated with previous (s_{t-1}, a_{t-1})
+                let r_prev = self.compute_reward(); // reward associated with previous (s_{t-1}, a_{t-1})
 
                 // 2. Build current state (normalized feature vector)
                 let s_t = self.build_state_vector();
@@ -865,15 +794,14 @@ impl BitrateManager {
                 let s_t_str = format!("{:?}", s_t_vec);
 
                 let sarsa_stats = SARSAStats {
-                    s_prev: s_prev_str,                   // previous state
-                    a_prev_idx: agent.a_prev_idx,         // previous action index
-                    r_prev,                               // previous reward
-                    r_prev_components: (u, nfr, rtt, sw), // previous reward components
-                    s_t: s_t_str,                         // current state
-                    a_t_idx,                              // current action index
-                    a_t_value,                            // current action value
-                    is_greedy: is_greedy,                 // whether current action is greedy
-                    requested_bitrate_bps: bitrate_bps,   // requested bitrate
+                    s_prev: s_prev_str,                 // previous state
+                    a_prev_idx: agent.a_prev_idx,       // previous action index
+                    r_prev,                             // previous reward
+                    s_t: s_t_str,                       // current state
+                    a_t_idx,                            // current action index
+                    a_t_value,                          // current action value
+                    is_greedy: is_greedy,               // whether current action is greedy
+                    requested_bitrate_bps: bitrate_bps, // requested bitrate
                 };
                 alvr_events::send_event(EventType::SARSAStats(sarsa_stats));
 
