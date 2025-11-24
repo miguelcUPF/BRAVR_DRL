@@ -165,6 +165,7 @@ impl eframe::App for Dashboard {
                 EventType::StatisticsSummary(statistics) => {
                     self.statistics_tab.update_statistics(statistics)
                 }
+                EventType::SARSAStats(statistics) => self.statistics_tab.update_sarsa_stats(statistics),
                 EventType::Session(session) => {
                     let settings = session.to_settings();
 

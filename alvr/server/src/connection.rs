@@ -1518,6 +1518,10 @@ fn connection_pipeline(
     keepalive_thread.join().ok();
     lifecycle_check_thread.join().ok();
 
+    {
+        BITRATE_MANAGER.lock().save_sarsa_model();
+    }
+
     Ok(())
 }
 

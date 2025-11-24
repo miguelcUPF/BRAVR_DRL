@@ -223,6 +223,10 @@ impl Layout {
         }
     }
 
+    pub fn sarsa_model(&self) -> PathBuf {
+        self.config_dir.join("sarsa_model.safetensors")
+    }
+
     pub fn crash_log(&self) -> PathBuf {
         self.log_dir.join("crash_log.txt")
     }

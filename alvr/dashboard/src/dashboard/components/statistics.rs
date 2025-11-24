@@ -1,5 +1,5 @@
 use crate::{dashboard::theme::graph_colors, dashboard::ServerRequest};
-use alvr_events::{GraphNetworkStatistics, GraphStatistics, StatisticsSummary};
+use alvr_events::{GraphNetworkStatistics, GraphStatistics, SARSAStats, StatisticsSummary};
 use alvr_gui_common::theme;
 use eframe::{
     egui::{
@@ -13,6 +13,7 @@ use statrs::statistics::{self, OrderStatistics};
 use std::{collections::VecDeque, ops::RangeInclusive};
 
 const GRAPH_HISTORY_SIZE: usize = 1000;
+const GRAPH_HISTORY_SIZE_SARSA: usize = 100;
 const UPPER_QUANTILE: f64 = 0.80;
 // const LOWER_QUANTILE: f64 = 0.2;
 // const MIDDLE_QUANTILE: f64 = 0.5;
@@ -23,6 +24,7 @@ fn draw_lines(painter: &Painter, points: Vec<Pos2>, color: Color32) {
 pub struct StatisticsTab {
     history: VecDeque<GraphStatistics>,
     history_network: VecDeque<GraphNetworkStatistics>,
+    history_sarsa: VecDeque<SARSAStats>,
     last_statistics_summary: Option<StatisticsSummary>,
 }
 
@@ -33,6 +35,9 @@ impl StatisticsTab {
                 .into_iter()
                 .collect(),
             history_network: vec![GraphNetworkStatistics::default(); GRAPH_HISTORY_SIZE]
+                .into_iter()
+                .collect(),
+            history_sarsa: vec![SARSAStats::default(); GRAPH_HISTORY_SIZE_SARSA]
                 .into_iter()
                 .collect(),
             last_statistics_summary: None,
@@ -53,6 +58,11 @@ impl StatisticsTab {
         self.history_network.push_back(statistics);
     }
 
+    pub fn update_sarsa_stats(&mut self, statistics: SARSAStats) {
+        self.history_sarsa.pop_front();
+        self.history_sarsa.push_back(statistics);
+    }
+
     pub fn ui(&mut self, ui: &mut Ui) -> Option<ServerRequest> {
         if let Some(stats) = &self.last_statistics_summary {
             ScrollArea::new([false, true]).show(ui, |ui| {
@@ -64,6 +74,11 @@ impl StatisticsTab {
                 self.draw_jitter(ui, available_width);
                 self.draw_frameloss(ui, available_width);
                 self.draw_frame_span_interarrival(ui, available_width);
+                ui.separator();
+                self.draw_sarsa_loss(ui, available_width);
+                self.draw_sarsa_q_values(ui, available_width);
+                self.draw_sarsa_rewards(ui, available_width);
+                ui.separator();
                 self.draw_statistics_overview(ui, stats);
             });
         } else {
@@ -127,6 +142,173 @@ impl StatisticsTab {
                 tooltip_content(ui, self.history.get(history_index).unwrap())
             });
         }
+    }
+
+    fn draw_sarsa_graph(
+        &self,
+        ui: &mut Ui,
+        available_width: f32,
+        title: &str,
+        data_range: RangeInclusive<f32>,
+        graph_content: impl FnOnce(&Painter, RectTransform),
+        tooltip_content: impl FnOnce(&mut Ui, &SARSAStats),
+    ) {
+        ui.add_space(10.0);
+        ui.label(RichText::new(title).size(20.0));
+
+        let canvas_response = Frame::canvas(ui.style()).show(ui, |ui| {
+            ui.ctx().request_repaint();
+            let size = available_width * vec2(1.0, 0.2);
+            let (_id, canvas_rect) = ui.allocate_space(size);
+
+            let max = *data_range.end();
+            let min = *data_range.start();
+
+            let data_rect = Rect::from_x_y_ranges(0.0..=GRAPH_HISTORY_SIZE_SARSA as f32, max..=min);
+            let to_screen = RectTransform::from_to(data_rect, canvas_rect);
+
+            let painter = ui.painter().with_clip_rect(canvas_rect);
+
+            graph_content(&painter, to_screen);
+
+            ui.painter().text(
+                to_screen * pos2(0.0, min),
+                Align2::LEFT_BOTTOM,
+                format!("{:.2}", min),
+                FontId::monospace(12.0),
+                Color32::GRAY,
+            );
+            ui.painter().text(
+                to_screen * pos2(0.0, max),
+                Align2::LEFT_TOP,
+                format!("{:.2}", max),
+                FontId::monospace(12.0),
+                Color32::GRAY,
+            );
+
+            data_rect
+        });
+
+        if let Some(pos) = canvas_response.response.hover_pos() {
+            let graph_pos =
+                RectTransform::from_to(canvas_response.response.rect, canvas_response.inner) * pos;
+            let history_index = (graph_pos.x as usize).clamp(0, GRAPH_HISTORY_SIZE_SARSA - 1);
+
+            if let Some(stats) = self.history_sarsa.get(history_index) {
+                popup::show_tooltip(ui.ctx(), Id::new("sarsa_popup"), |ui| {
+                    tooltip_content(ui, stats)
+                });
+            }
+        }
+    }
+
+    fn draw_sarsa_loss(&self, ui: &mut Ui, available_width: f32) {
+        let mut data = statistics::Data::new(
+            self.history_sarsa
+                .iter()
+                .map(|s| s.loss as f64)
+                .collect::<Vec<_>>(),
+        );
+
+        let upper = data.quantile(0.95) as f32;
+
+        self.draw_sarsa_graph(
+            ui,
+            available_width,
+            "SARSA Loss",
+            -0.05..=upper,
+            |painter, to_screen_trans| {
+                let mut loss_points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
+
+                for i in 0..GRAPH_HISTORY_SIZE_SARSA {
+                    let s = &self.history_sarsa[i];
+                    loss_points.push(to_screen_trans * pos2(i as f32, s.loss));
+                }
+
+                draw_lines(painter, loss_points, Color32::RED);
+            },
+            |ui, stats| {
+                ui.colored_label(Color32::RED, format!("Loss: {:.5}", stats.loss));
+            },
+        );
+    }
+
+    fn draw_sarsa_q_values(&self, ui: &mut Ui, available_width: f32) {
+        let mut data = statistics::Data::new(
+            self.history_sarsa
+                .iter()
+                .map(|s| s.q_val_pred as f64)
+                .collect::<Vec<_>>(),
+        );
+
+        let upper = data.quantile(0.95) as f32;
+        let lower = data.quantile(0.05) as f32;
+
+        self.draw_sarsa_graph(
+            ui,
+            available_width,
+            "SARSA Q-Values",
+            lower..=upper,
+            |painter, to_screen_trans| {
+                let mut q_points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
+
+                for i in 0..GRAPH_HISTORY_SIZE_SARSA {
+                    let s = &self.history_sarsa[i];
+                    q_points.push(to_screen_trans * pos2(i as f32, s.q_val_pred));
+                }
+
+                draw_lines(painter, q_points, Color32::BLUE);
+            },
+            |ui, stats| {
+                ui.colored_label(Color32::BLUE, format!("Q-Pred: {:.2}", stats.q_val_pred));
+            },
+        );
+    }
+
+    fn draw_sarsa_rewards(&self, ui: &mut Ui, available_width: f32) {
+        if self.history_sarsa.is_empty() {
+            return;
+        }
+
+        let mut data = statistics::Data::new(
+            self.history_sarsa
+                .iter()
+                .map(|s| s.r_prev as f64)
+                .collect::<Vec<_>>(),
+        );
+
+        let lower = data.quantile(0.05) as f32;
+
+        self.draw_sarsa_graph(
+            ui,
+            available_width,
+            "SARSA Rewards",
+            lower..=1.05,
+            |painter, to_screen_trans| {
+                let mut reward_points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
+
+                for i in 0..GRAPH_HISTORY_SIZE_SARSA {
+                    let stats = &self.history_sarsa[i];
+                    reward_points.push(to_screen_trans * pos2(i as f32, stats.r_prev));
+                }
+
+                draw_lines(painter, reward_points, Color32::GREEN);
+            },
+            |ui, stats| {
+                ui.colored_label(Color32::GREEN, format!("Reward: {:.2}", stats.r_prev));
+                ui.label(format!(
+                    "Bitrate: {:.1} Mbps",
+                    stats.requested_bitrate_bps / 1e6
+                ));
+                ui.label(format!("Action value: {}", stats.a_t_value));
+
+                if stats.matches_argmax {
+                    ui.label("Type: Exploit"); // sampled action equals highest Q-value
+                } else {
+                    ui.label("Type: Explore"); // sampled action differs from argmax
+                }
+            },
+        );
     }
 
     fn draw_network_graph(
