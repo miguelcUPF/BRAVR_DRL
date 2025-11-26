@@ -214,6 +214,20 @@ impl StatisticsTab {
         self.draw_ap_interface_quality_graph(ui, width);
     }
 
+    pub fn draw_ap_info_message(&self, ui: &mut Ui) {
+        if self.history_ap.is_empty() {
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("ℹ TX and RX are described from the access point's interface perspective. TX = AP -> client, RX = client -> AP")
+                    .size(12.0)
+                    .color(Color32::GRAY)
+            );
+        });
+    }
+
     pub fn ui(&mut self, ui: &mut Ui) -> Option<ServerRequest> {
         if let Some(stats) = &self.last_statistics_summary {
             ScrollArea::new([false, true]).show(ui, |ui| {
@@ -230,15 +244,14 @@ impl StatisticsTab {
                 self.draw_sarsa_q_values(ui, available_width);
                 self.draw_sarsa_rewards(ui, available_width);
                 ui.separator();
-                self.draw_ap_clients_rx_mcs_graph(ui, available_width);
+                self.draw_ap_clients_tx_mcs_graph(ui, available_width);
                 if self.bulk_ap_stats {
-                    self.draw_ap_clients_tx_mcs_graph(ui, available_width);
+                    self.draw_ap_clients_rx_mcs_graph(ui, available_width);
                 }
                 self.draw_ap_interface_channel_activity_graph(ui, available_width);
                 self.draw_ap_clients_count_graph(ui, available_width);
-
                 self.draw_bulk_ap_graphs(ui, available_width);
-
+                self.draw_ap_info_message(ui);
                 ui.separator();
                 self.draw_statistics_overview(ui, stats);
             });
@@ -545,7 +558,7 @@ impl StatisticsTab {
 
         paint = |painter: &Painter, to_screen_trans, _i, _iface: &Interface, clients: &Vec<Client>, _client| {
             for client in clients {
-                let color = series_color(&client.mac);
+                let color = series_color(&client.ip);
 
                 let points: Vec<Pos2> = (0..self.history_ap.len())
                     .enumerate()
@@ -553,7 +566,7 @@ impl StatisticsTab {
                         let snap = &self.history_ap[idx];
                         snap.interfaces.iter()
                             .flat_map(|iface| &iface.clients)
-                            .find(|c| c.mac == client.mac)
+                            .find(|c| c.ip == client.ip)
                             .map(|c| to_screen_trans * pos2(idx as f32, c.rx.mcs.parse::<f32>().unwrap_or(0.0)))
                     })
                     .collect();
@@ -569,7 +582,7 @@ impl StatisticsTab {
             if let Some(iface) = iface_opt {
                 tui.label(format!("Interface: {}", iface.interface));
                 for c in &iface.clients {
-                    let color = series_color(&c.mac);
+                    let color = series_color(&c.ip);
                     tui.colored_label(color, format!("{}: RX MCS {}", c.ip, c.rx.mcs));
                 }
             }
@@ -583,7 +596,7 @@ impl StatisticsTab {
 
         paint = |painter: &Painter, to_screen_trans, _i, _iface: &Interface, clients: &Vec<Client>, _client| {
             for client in clients {
-                let color = series_color(&client.mac);
+                let color = series_color(&client.ip);
 
                 let points: Vec<Pos2> = (0..self.history_ap.len())
                     .enumerate()
@@ -591,7 +604,7 @@ impl StatisticsTab {
                         let snap = &self.history_ap[idx];
                         snap.interfaces.iter()
                             .flat_map(|iface| &iface.clients)
-                            .find(|c| c.mac == client.mac)
+                            .find(|c| c.ip == client.ip)
                             .map(|c| to_screen_trans * pos2(idx as f32, c.tx.mcs.parse::<f32>().unwrap_or(0.0)))
                     })
                     .collect();
@@ -607,7 +620,7 @@ impl StatisticsTab {
             if let Some(iface) = iface_opt {
                 tui.label(format!("Interface: {}", iface.interface));
                 for c in &iface.clients {
-                    let color = series_color(&c.mac);
+                    let color = series_color(&c.ip);
                     tui.colored_label(color, format!("{}: TX MCS {}", c.ip, c.tx.mcs));
                 }
             }
@@ -616,44 +629,67 @@ impl StatisticsTab {
 
     make_ap_custom_graph!(
         fn draw_ap_interface_channel_activity_graph(self, ui, width),
-        title = "Channel Activity (%)",
+        title = "Activity (%)",
         yrange = 0.0..=100.0,
 
         paint = |painter: &Painter, to_screen_trans, _i, iface: &Interface, _clients, _client| {
-            let history_len = self.history_ap.len();
-            if history_len < 2 { return; }
+            let hist = &self.history_ap;
+            if hist.len() < 2 { return; }
 
             let mut busy_points = Vec::new();
             let mut rx_points   = Vec::new();
-            let mut bss_points  = Vec::new();
             let mut tx_points   = Vec::new();
 
-            for (idx, ap_snapshot) in self.history_ap.iter().enumerate() {
-                if let Some(hist_iface) = ap_snapshot.interfaces.iter()
+            // Store previous counters
+            let mut prev_busy   = None;
+            let mut prev_rx     = None;
+            let mut prev_tx     = None;
+            let mut prev_active = None;
+
+            for (idx, ap_snapshot) in hist.iter().enumerate() {
+                if let Some(hist_iface) = ap_snapshot
+                    .interfaces
+                    .iter()
                     .find(|i| i.interface == iface.interface)
                 {
                     let act = hist_iface.ch_active_time_ms.parse::<f32>().unwrap_or(0.0);
-                    if act <= 0.0 { continue; }
-
-                    let busy_p = hist_iface.ch_busy_time_ms.parse::<f32>().unwrap_or(0.0) * 100.0 / act;
-                    let rx_p   = hist_iface.ch_rx_time_ms.parse::<f32>().unwrap_or(0.0) * 100.0 / act;
-                    let bss_p  = hist_iface.ch_bss_rx_time_ms.parse::<f32>().unwrap_or(0.0) * 100.0 / act;
-                    let tx_p   = hist_iface.ch_tx_time_ms.parse::<f32>().unwrap_or(0.0) * 100.0 / act;
-
-                    let x = idx as f32;
-                    busy_points.push(to_screen_trans * pos2(x, busy_p));
-                    if self.bulk_ap_stats {
-                        rx_points.push(to_screen_trans * pos2(x, rx_p));
-                        bss_points.push(to_screen_trans * pos2(x, bss_p));
-                        tx_points.push(to_screen_trans * pos2(x, tx_p));
+                    if act <= 0.0 {
+                        // Cannot compute valid ratios — skip this iteration
+                        continue;
                     }
+
+                    let busy = hist_iface.ch_busy_time_ms.parse::<f32>().unwrap_or(0.0);
+                    let rx   = hist_iface.ch_rx_time_ms.parse::<f32>().unwrap_or(0.0);
+                    let tx   = hist_iface.ch_tx_time_ms.parse::<f32>().unwrap_or(0.0);
+
+                    if let (Some(p_busy), Some(p_rx), Some(p_tx), Some(p_active)) =
+                        (prev_busy, prev_rx, prev_tx, prev_active)
+                    {
+                        let delta_active = act - p_active;
+                        if delta_active > 0.0 {
+                            let x = idx as f32;
+
+                            let busy_p = (busy - p_busy) * 100.0 / delta_active;
+                            busy_points.push(to_screen_trans * pos2(x, busy_p));
+
+                            if self.bulk_ap_stats {
+                                rx_points.push(to_screen_trans * pos2(x, (rx - p_rx) * 100.0 / delta_active));
+                                tx_points.push(to_screen_trans * pos2(x, (tx - p_tx) * 100.0 / delta_active));
+                            }
+                        }
+                    }
+
+                    // Update previous counters
+                    prev_busy   = Some(busy);
+                    prev_rx     = Some(rx);
+                    prev_tx     = Some(tx);
+                    prev_active = Some(act);
                 }
             }
 
             if busy_points.len() >= 2 { draw_lines(painter, busy_points, Color32::RED); }
             if self.bulk_ap_stats {
                 if rx_points.len() >= 2   { draw_lines(painter, rx_points, Color32::GREEN); }
-                if bss_points.len() >= 2  { draw_lines(painter, bss_points, Color32::YELLOW); }
                 if tx_points.len() >= 2   { draw_lines(painter, tx_points, Color32::BLUE); }
             }
         },
@@ -661,22 +697,59 @@ impl StatisticsTab {
         tooltip = |tui, stats| {
             let (iface_opt, _) = find_client_interface(stats, self.client_ip.unwrap());
             if let Some(iface) = iface_opt {
-                let act = iface.ch_active_time_ms.parse::<f32>().unwrap_or(0.0);
-                if act > 0.0 {
-                    let busy = iface.ch_busy_time_ms.parse::<f32>().unwrap_or(0.0);
-                    tui.colored_label(Color32::RED, format!("Busy: {:.1}%", busy * 100.0 / act));
-                    if self.bulk_ap_stats {
-                        let rx  = iface.ch_rx_time_ms.parse::<f32>().unwrap_or(0.0);
-                        let bss = iface.ch_bss_rx_time_ms.parse::<f32>().unwrap_or(0.0);
-                        let tx  = iface.ch_tx_time_ms.parse::<f32>().unwrap_or(0.0);
-                        tui.colored_label(Color32::GREEN, format!("RX: {:.1}%", rx * 100.0 / act));
-                        tui.colored_label(Color32::BLUE, format!("TX: {:.1}%", tx * 100.0 / act));
-                        tui.colored_label(Color32::YELLOW, format!("RX (from associated clients): {:.1}%", bss * 100.0 / act));
-                    }
+                let idx = self.history_ap.iter().position(|s| std::ptr::eq(s, stats));
+                if idx.is_none() || idx.unwrap() == 0 {
+                    // No delta possible at index 0
+                    return;
+                }
+                let i = idx.unwrap();
+
+                let prev = &self.history_ap[i - 1];
+                let curr = &self.history_ap[i];
+
+                // Find matching interface in prev/curr snapshots
+                let prev_iface = prev.interfaces.iter().find(|x| x.interface == iface.interface);
+                let curr_iface = curr.interfaces.iter().find(|x| x.interface == iface.interface);
+
+                if prev_iface.is_none() || curr_iface.is_none() {
+                    return;
+                }
+
+                let p = prev_iface.unwrap();
+                let c = curr_iface.unwrap();
+
+                let p_act = p.ch_active_time_ms.parse::<f32>().unwrap_or(0.0);
+                let c_act = c.ch_active_time_ms.parse::<f32>().unwrap_or(0.0);
+                let delta_active = c_act - p_act;
+
+                if delta_active <= 0.0 {
+                    return;
+                }
+
+                // Compute deltas exactly like paint()
+                let busy_delta = c.ch_busy_time_ms.parse::<f32>().unwrap_or(0.0)
+                    - p.ch_busy_time_ms.parse::<f32>().unwrap_or(0.0);
+
+                let rx_delta = c.ch_rx_time_ms.parse::<f32>().unwrap_or(0.0)
+                    - p.ch_rx_time_ms.parse::<f32>().unwrap_or(0.0);
+
+                let tx_delta = c.ch_tx_time_ms.parse::<f32>().unwrap_or(0.0)
+                    - p.ch_tx_time_ms.parse::<f32>().unwrap_or(0.0);
+
+                let busy_p = (busy_delta * 100.0 / delta_active).clamp(0.0, 100.0);
+
+                tui.colored_label(Color32::RED, format!("Busy (channel): {:.1}%", busy_p));
+
+                if self.bulk_ap_stats {
+                    tui.colored_label(Color32::GREEN,
+                        format!("RX: {:.1}%", (rx_delta * 100.0 / delta_active).clamp(0.0, 100.0))
+                    );
+                    tui.colored_label(Color32::BLUE,
+                        format!("TX: {:.1}%", (tx_delta * 100.0 / delta_active).clamp(0.0, 100.0))
+                    );
                 }
             }
         }
-
     );
 
     make_ap_series_graph!(
@@ -693,8 +766,13 @@ impl StatisticsTab {
             if let Some(iface) = iface_opt {
                 let color = series_color("count");
                 tui.colored_label(color, format!("Clients: {}", iface.clients.len()));
+
                 for c in &iface.clients {
-                    tui.label(format!("{}: {} dBm", c.ip, c.signal_dbm));
+                    if self.bulk_ap_stats {
+                        tui.label(format!("{}: {} dBm", c.ip, c.signal_dbm));
+                    } else {
+                        tui.label(format!("{}", c.ip));
+                    }
                 }
             }
         }

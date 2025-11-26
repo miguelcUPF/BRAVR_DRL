@@ -159,7 +159,7 @@ impl BitrateManager {
             let (iface_opt, client_opt) = find_client_interface(ap_stats, self.client_ip);
 
             if let Some(client) = client_opt {
-                if let Ok(mcs) = client.rx.mcs.parse::<f32>() {
+                if let Ok(mcs) = client.tx.mcs.parse::<f32>() {
                     mcs_sum += mcs;
                     mcs_count += 1.0;
                 }
