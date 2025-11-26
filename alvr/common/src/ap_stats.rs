@@ -1,6 +1,29 @@
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+pub fn find_client_interface(
+    ap_stats: &APStats,
+    client_ip: IpAddr,
+) -> (Option<Interface>, Option<Client>) {
+    let mut interface = None;
+    let mut client_ap_stats = None;
+
+    for iface in &ap_stats.interfaces {
+        for client in &iface.clients {
+            if client.ip.parse::<IpAddr>().ok() == Some(client_ip) {
+                interface = Some(iface.clone());
+                client_ap_stats = Some(client.clone());
+                break;
+            }
+        }
+        if client_ap_stats.is_some() {
+            break;
+        }
+    }
+    (interface, client_ap_stats)
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct APStats {
     pub interfaces: Vec<Interface>,
 }

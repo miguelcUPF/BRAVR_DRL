@@ -752,7 +752,7 @@ impl StatisticsManager {
     }
 
     pub fn report_ap_statistics(&mut self, ap_stats: &APStats) {
-        alvr_events::send_event(EventType::APStatistics(ap_stats.clone()));
+        alvr_events::send_event(EventType::APStats(ap_stats.clone()));
     }
 
     pub fn video_pipeline_latency_average(&self) -> Duration {

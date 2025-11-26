@@ -1,4 +1,5 @@
 use crate::{dashboard::theme::graph_colors, dashboard::ServerRequest};
+use alvr_common::{find_client_interface, APStats, Client, Interface};
 use alvr_events::{GraphNetworkStatistics, GraphStatistics, SARSAStats, StatisticsSummary};
 use alvr_gui_common::theme;
 use eframe::{
@@ -10,10 +11,11 @@ use eframe::{
     epaint::Pos2,
 };
 use statrs::statistics::{self, OrderStatistics};
-use std::{collections::VecDeque, ops::RangeInclusive};
+use std::{collections::VecDeque, net::IpAddr, ops::RangeInclusive};
 
 const GRAPH_HISTORY_SIZE: usize = 1000;
 const GRAPH_HISTORY_SIZE_SARSA: usize = 100;
+const GRAPH_HISTORY_SIZE_AP: usize = 100;
 const UPPER_QUANTILE: f64 = 0.80;
 // const LOWER_QUANTILE: f64 = 0.2;
 // const MIDDLE_QUANTILE: f64 = 0.5;
@@ -21,11 +23,132 @@ fn draw_lines(painter: &Painter, points: Vec<Pos2>, color: Color32) {
     painter.add(Shape::line(points, Stroke::new(1.0, color)));
 }
 
+fn series_color(name: &str) -> Color32 {
+    use fxhash::hash64;
+    let h = hash64(name.as_bytes());
+    let min_val = 100; // ensures visible brightness
+    let r = (((h >> 16) & 0xFF) as u8).max(min_val);
+    let g = (((h >> 8) & 0xFF) as u8).max(min_val);
+    let b = ((h & 0xFF) as u8).max(min_val);
+
+    Color32::from_rgb(r, g, b)
+}
+// SERIES GRAPH MACRO FOR AP STATS
+macro_rules! make_ap_series_graph {
+    (
+        fn $fn_name:ident ($self_ident:ident, $ui_ident:ident, $width_ident:ident),
+        title = $title:expr,
+        yrange = $yrange:expr,
+        series = { $( $label:expr => $closure:expr ),+ $(,)? },
+        tooltip = |$tui_ident:ident, $stats_ident:ident| $tooltip_block:block
+    ) => {
+
+        fn $fn_name(&$self_ident, $ui_ident: &mut Ui, $width_ident: f32) {
+            if $self_ident.history_ap.is_empty() {
+                return;
+            }
+
+            let Some(client_ip) = $self_ident.client_ip else { return };
+
+            $self_ident.draw_ap_graph(
+                $ui_ident,
+                $width_ident,
+                $title,
+                $yrange,
+
+                move |painter, to_screen_trans| {
+                    $(
+                        let mut pts: Vec<Pos2> = Vec::with_capacity(GRAPH_HISTORY_SIZE_AP);
+
+                        for i in 0..GRAPH_HISTORY_SIZE_AP {
+                            let ap_stats = &$self_ident.history_ap[i];
+                            let (iface_opt, client_opt) = find_client_interface(ap_stats, client_ip);
+                            let iface = match iface_opt {
+                                Some(v) => v,
+                                None => { pts.push(to_screen_trans * pos2(i as f32, 0.0)); continue; }
+                            };
+
+                            let v = ($closure)(&iface, client_opt.as_ref());
+                            pts.push(to_screen_trans * pos2(i as f32, v));
+                        }
+
+                        // deterministic per-series color
+                        let color = series_color($label);
+
+                        draw_lines(painter, pts, color);
+                    )+
+                },
+
+                move |$tui_ident: &mut Ui, $stats_ident: &APStats| {
+                    let (iface_opt, _client_opt) = find_client_interface($stats_ident, client_ip);
+                    if iface_opt.is_none() {
+                        $tui_ident.label("Client interface not found");
+                        return;
+                    }
+
+                    $tooltip_block
+                }
+            );
+        }
+    }
+}
+
+// CUSTOM GRAPH MACRO FOR AP STATS (rectangles, stacked bars, etc.)
+macro_rules! make_ap_custom_graph {
+    (
+        fn $fn_name:ident ($self_ident:ident, $ui_ident:ident, $width_ident:ident),
+        title = $title:expr,
+        yrange = $yrange:expr,
+        paint = $paint:expr,
+        tooltip = |$tui_ident:ident, $stats_ident:ident| $tooltip_block:block
+    ) => {
+        fn $fn_name(&$self_ident, $ui_ident: &mut Ui, $width_ident: f32) {
+            if $self_ident.history_ap.is_empty() {
+                return;
+            }
+
+            let Some(client_ip) = $self_ident.client_ip else {
+                return;
+            };
+
+            $self_ident.draw_ap_graph(
+                $ui_ident,
+                $width_ident,
+                $title,
+                $yrange,
+
+                move |painter, to_screen_trans| {
+                    for i in 0..GRAPH_HISTORY_SIZE_AP {
+                        let ap_stats = &$self_ident.history_ap[i];
+                        let (iface_opt, client_opt) = find_client_interface(ap_stats, client_ip);
+                        let iface = match iface_opt { Some(v) => v, None => continue };
+                        let clients = &iface.clients;
+
+                        ($paint)(painter, to_screen_trans, i, &iface, clients, client_opt.as_ref());
+                    }
+                },
+
+                move |$tui_ident: &mut Ui, $stats_ident: &APStats| {
+                    let (iface_opt, _) = find_client_interface($stats_ident, client_ip);
+                    if iface_opt.is_none() {
+                        $tui_ident.label("Interface not found");
+                        return;
+                    }
+                    $tooltip_block
+                }
+            );
+        }
+    };
+}
+
 pub struct StatisticsTab {
     history: VecDeque<GraphStatistics>,
     history_network: VecDeque<GraphNetworkStatistics>,
     history_sarsa: VecDeque<SARSAStats>,
+    history_ap: VecDeque<APStats>,
     last_statistics_summary: Option<StatisticsSummary>,
+    client_ip: Option<IpAddr>,
+    bulk_ap_stats: bool,
 }
 
 impl StatisticsTab {
@@ -40,8 +163,21 @@ impl StatisticsTab {
             history_sarsa: vec![SARSAStats::default(); GRAPH_HISTORY_SIZE_SARSA]
                 .into_iter()
                 .collect(),
+            history_ap: vec![APStats::default(); GRAPH_HISTORY_SIZE_AP]
+                .into_iter()
+                .collect(),
             last_statistics_summary: None,
+            client_ip: None,
+            bulk_ap_stats: false,
         }
+    }
+
+    pub fn update_client_ip(&mut self, client_ip: IpAddr) {
+        self.client_ip = Some(client_ip);
+    }
+
+    pub fn enable_bulk_ap_stats(&mut self) {
+        self.bulk_ap_stats = true;
     }
 
     pub fn update_statistics(&mut self, statistics: StatisticsSummary) {
@@ -63,6 +199,21 @@ impl StatisticsTab {
         self.history_sarsa.push_back(statistics);
     }
 
+    pub fn update_ap_stats(&mut self, statistics: APStats) {
+        self.history_ap.pop_front();
+        self.history_ap.push_back(statistics);
+    }
+
+    pub fn draw_bulk_ap_graphs(&self, ui: &mut Ui, width: f32) {
+        if !self.bulk_ap_stats {
+            return;
+        }
+        self.draw_ap_client_snr_graph(ui, width);
+        self.draw_ap_client_tx_rx_mcs_graph(ui, width);
+        self.draw_ap_interface_bytes_mbps_graph(ui, width);
+        self.draw_ap_interface_quality_graph(ui, width);
+    }
+
     pub fn ui(&mut self, ui: &mut Ui) -> Option<ServerRequest> {
         if let Some(stats) = &self.last_statistics_summary {
             ScrollArea::new([false, true]).show(ui, |ui| {
@@ -78,6 +229,16 @@ impl StatisticsTab {
                 self.draw_sarsa_loss(ui, available_width);
                 self.draw_sarsa_q_values(ui, available_width);
                 self.draw_sarsa_rewards(ui, available_width);
+                ui.separator();
+                self.draw_ap_clients_rx_mcs_graph(ui, available_width);
+                if self.bulk_ap_stats {
+                    self.draw_ap_clients_tx_mcs_graph(ui, available_width);
+                }
+                self.draw_ap_interface_channel_activity_graph(ui, available_width);
+                self.draw_ap_clients_count_graph(ui, available_width);
+
+                self.draw_bulk_ap_graphs(ui, available_width);
+
                 ui.separator();
                 self.draw_statistics_overview(ui, stats);
             });
@@ -119,14 +280,14 @@ impl StatisticsTab {
                 to_screen * pos2(0.0, min),
                 Align2::LEFT_BOTTOM,
                 format!("{:.0}", min),
-                FontId::monospace(20.0),
+                FontId::monospace(12.0),
                 Color32::GRAY,
             );
             ui.painter().text(
                 to_screen * pos2(0.0, max),
                 Align2::LEFT_TOP,
                 format!("{:.0}", max),
-                FontId::monospace(20.0),
+                FontId::monospace(12.0),
                 Color32::GRAY,
             );
 
@@ -202,7 +363,69 @@ impl StatisticsTab {
         }
     }
 
+    fn draw_ap_graph(
+        &self,
+        ui: &mut Ui,
+        available_width: f32,
+        title: &str,
+        data_range: RangeInclusive<f32>,
+        graph_content: impl FnOnce(&Painter, RectTransform),
+        tooltip_content: impl FnOnce(&mut Ui, &APStats),
+    ) {
+        ui.add_space(10.0);
+        ui.label(RichText::new(title).size(20.0));
+
+        let canvas_response = Frame::canvas(ui.style()).show(ui, |ui| {
+            ui.ctx().request_repaint();
+            let size = available_width * vec2(1.0, 0.2);
+
+            let (_id, canvas_rect) = ui.allocate_space(size);
+
+            let max = *data_range.end();
+            let min = *data_range.start();
+            let data_rect = Rect::from_x_y_ranges(0.0..=GRAPH_HISTORY_SIZE_AP as f32, max..=min);
+            let to_screen = RectTransform::from_to(data_rect, canvas_rect);
+
+            let painter = ui.painter().with_clip_rect(canvas_rect);
+
+            graph_content(&painter, to_screen);
+
+            ui.painter().text(
+                to_screen * pos2(0.0, min),
+                Align2::LEFT_BOTTOM,
+                format!("{:.0}", min),
+                FontId::monospace(12.0),
+                Color32::GRAY,
+            );
+            ui.painter().text(
+                to_screen * pos2(0.0, max),
+                Align2::LEFT_TOP,
+                format!("{:.0}", max),
+                FontId::monospace(12.0),
+                Color32::GRAY,
+            );
+
+            data_rect
+        });
+
+        if let Some(pos) = canvas_response.response.hover_pos() {
+            let graph_pos =
+                RectTransform::from_to(canvas_response.response.rect, canvas_response.inner) * pos;
+            let history_index = (graph_pos.x as usize).clamp(0, GRAPH_HISTORY_SIZE_AP - 1);
+
+            if let Some(stats) = self.history_ap.get(history_index) {
+                popup::show_tooltip(ui.ctx(), Id::new("ap_popup"), |ui| {
+                    tooltip_content(ui, stats)
+                });
+            }
+        }
+    }
+
     fn draw_sarsa_loss(&self, ui: &mut Ui, available_width: f32) {
+        if self.history_sarsa.is_empty() {
+            return;
+        }
+
         let mut data = statistics::Data::new(
             self.history_sarsa
                 .iter()
@@ -234,6 +457,10 @@ impl StatisticsTab {
     }
 
     fn draw_sarsa_q_values(&self, ui: &mut Ui, available_width: f32) {
+        if self.history_sarsa.is_empty() {
+            return;
+        }
+
         let mut data = statistics::Data::new(
             self.history_sarsa
                 .iter()
@@ -310,6 +537,290 @@ impl StatisticsTab {
             },
         );
     }
+
+    make_ap_custom_graph!(
+        fn draw_ap_clients_rx_mcs_graph(self, ui, width),
+        title = "RX MCS (all clients)",
+        yrange = 0.0..=12.0,
+
+        paint = |painter: &Painter, to_screen_trans, _i, _iface: &Interface, clients: &Vec<Client>, _client| {
+            for client in clients {
+                let color = series_color(&client.mac);
+
+                let points: Vec<Pos2> = (0..self.history_ap.len())
+                    .enumerate()
+                    .filter_map(|(idx, _)| {
+                        let snap = &self.history_ap[idx];
+                        snap.interfaces.iter()
+                            .flat_map(|iface| &iface.clients)
+                            .find(|c| c.mac == client.mac)
+                            .map(|c| to_screen_trans * pos2(idx as f32, c.rx.mcs.parse::<f32>().unwrap_or(0.0)))
+                    })
+                    .collect();
+
+                if points.len() >= 2 {
+                    draw_lines(painter, points, color);
+                }
+            }
+        },
+
+        tooltip = |tui, stats| {
+            let (iface_opt, _) = find_client_interface(stats, self.client_ip.unwrap());
+            if let Some(iface) = iface_opt {
+                tui.label(format!("Interface: {}", iface.interface));
+                for c in &iface.clients {
+                    let color = series_color(&c.mac);
+                    tui.colored_label(color, format!("{}: RX MCS {}", c.ip, c.rx.mcs));
+                }
+            }
+        }
+    );
+
+    make_ap_custom_graph!(
+        fn draw_ap_clients_tx_mcs_graph(self, ui, width),
+        title = "TX MCS (all clients)",
+        yrange = 0.0..=12.0,
+
+        paint = |painter: &Painter, to_screen_trans, _i, _iface: &Interface, clients: &Vec<Client>, _client| {
+            for client in clients {
+                let color = series_color(&client.mac);
+
+                let points: Vec<Pos2> = (0..self.history_ap.len())
+                    .enumerate()
+                    .filter_map(|(idx, _)| {
+                        let snap = &self.history_ap[idx];
+                        snap.interfaces.iter()
+                            .flat_map(|iface| &iface.clients)
+                            .find(|c| c.mac == client.mac)
+                            .map(|c| to_screen_trans * pos2(idx as f32, c.tx.mcs.parse::<f32>().unwrap_or(0.0)))
+                    })
+                    .collect();
+
+                if points.len() >= 2 {
+                    draw_lines(painter, points, color);
+                }
+            }
+        },
+
+        tooltip = |tui, stats| {
+            let (iface_opt, _) = find_client_interface(stats, self.client_ip.unwrap());
+            if let Some(iface) = iface_opt {
+                tui.label(format!("Interface: {}", iface.interface));
+                for c in &iface.clients {
+                    let color = series_color(&c.mac);
+                    tui.colored_label(color, format!("{}: TX MCS {}", c.ip, c.tx.mcs));
+                }
+            }
+        }
+    );
+
+    make_ap_custom_graph!(
+        fn draw_ap_interface_channel_activity_graph(self, ui, width),
+        title = "Channel Activity (%)",
+        yrange = 0.0..=100.0,
+
+        paint = |painter: &Painter, to_screen_trans, _i, iface: &Interface, _clients, _client| {
+            let history_len = self.history_ap.len();
+            if history_len < 2 { return; }
+
+            let mut busy_points = Vec::new();
+            let mut rx_points   = Vec::new();
+            let mut bss_points  = Vec::new();
+            let mut tx_points   = Vec::new();
+
+            for (idx, ap_snapshot) in self.history_ap.iter().enumerate() {
+                if let Some(hist_iface) = ap_snapshot.interfaces.iter()
+                    .find(|i| i.interface == iface.interface)
+                {
+                    let act = hist_iface.ch_active_time_ms.parse::<f32>().unwrap_or(0.0);
+                    if act <= 0.0 { continue; }
+
+                    let busy_p = hist_iface.ch_busy_time_ms.parse::<f32>().unwrap_or(0.0) * 100.0 / act;
+                    let rx_p   = hist_iface.ch_rx_time_ms.parse::<f32>().unwrap_or(0.0) * 100.0 / act;
+                    let bss_p  = hist_iface.ch_bss_rx_time_ms.parse::<f32>().unwrap_or(0.0) * 100.0 / act;
+                    let tx_p   = hist_iface.ch_tx_time_ms.parse::<f32>().unwrap_or(0.0) * 100.0 / act;
+
+                    let x = idx as f32;
+                    busy_points.push(to_screen_trans * pos2(x, busy_p));
+                    if self.bulk_ap_stats {
+                        rx_points.push(to_screen_trans * pos2(x, rx_p));
+                        bss_points.push(to_screen_trans * pos2(x, bss_p));
+                        tx_points.push(to_screen_trans * pos2(x, tx_p));
+                    }
+                }
+            }
+
+            if busy_points.len() >= 2 { draw_lines(painter, busy_points, Color32::RED); }
+            if self.bulk_ap_stats {
+                if rx_points.len() >= 2   { draw_lines(painter, rx_points, Color32::GREEN); }
+                if bss_points.len() >= 2  { draw_lines(painter, bss_points, Color32::YELLOW); }
+                if tx_points.len() >= 2   { draw_lines(painter, tx_points, Color32::BLUE); }
+            }
+        },
+
+        tooltip = |tui, stats| {
+            let (iface_opt, _) = find_client_interface(stats, self.client_ip.unwrap());
+            if let Some(iface) = iface_opt {
+                let act = iface.ch_active_time_ms.parse::<f32>().unwrap_or(0.0);
+                if act > 0.0 {
+                    let busy = iface.ch_busy_time_ms.parse::<f32>().unwrap_or(0.0);
+                    tui.colored_label(Color32::RED, format!("Busy: {:.1}%", busy * 100.0 / act));
+                    if self.bulk_ap_stats {
+                        let rx  = iface.ch_rx_time_ms.parse::<f32>().unwrap_or(0.0);
+                        let bss = iface.ch_bss_rx_time_ms.parse::<f32>().unwrap_or(0.0);
+                        let tx  = iface.ch_tx_time_ms.parse::<f32>().unwrap_or(0.0);
+                        tui.colored_label(Color32::GREEN, format!("RX: {:.1}%", rx * 100.0 / act));
+                        tui.colored_label(Color32::BLUE, format!("TX: {:.1}%", tx * 100.0 / act));
+                        tui.colored_label(Color32::YELLOW, format!("RX (from associated clients): {:.1}%", bss * 100.0 / act));
+                    }
+                }
+            }
+        }
+
+    );
+
+    make_ap_series_graph!(
+        fn draw_ap_clients_count_graph(self, ui, width),
+        title = "Client Count",
+        yrange = 0.0..=10.0,
+
+        series = {
+            "count" => |iface: &Interface, _client: Option<&Client>| iface.clients.len() as f32
+        },
+
+        tooltip = |tui, stats| {
+            let (iface_opt, _) = find_client_interface(stats, self.client_ip.unwrap());
+            if let Some(iface) = iface_opt {
+                let color = series_color("count");
+                tui.colored_label(color, format!("Clients: {}", iface.clients.len()));
+                for c in &iface.clients {
+                    tui.label(format!("{}: {} dBm", c.ip, c.signal_dbm));
+                }
+            }
+        }
+    );
+
+    make_ap_series_graph!(
+        fn draw_ap_client_snr_graph(self, ui, width),
+        title = "Client SNR (dB)",
+        yrange = 0.0..=60.0,
+
+        series = {
+            "snr" => |_iface: &Interface, client: Option<&Client>| {
+                client.map(|c| c.snr_db.parse::<f32>().unwrap_or(0.0)).unwrap_or(0.0)
+            }
+        },
+
+        tooltip = |tui, stats| {
+            let (iface_opt, client_opt) = find_client_interface(stats, self.client_ip.unwrap());
+            if let Some(_iface) = iface_opt {
+                if let Some(client) = client_opt {
+                    let color = series_color("snr");
+                    tui.colored_label(color, format!("SNR: {} dB", client.snr_db));
+                    tui.label(format!("Signal: {} dBm", client.signal_dbm));
+                    tui.label(format!("Noise: {} dBm", client.noise_dbm));
+                }
+            }
+        }
+    );
+
+    make_ap_series_graph!(
+        fn draw_ap_client_tx_rx_mcs_graph(self, ui, width),
+        title = "Client TX/RX MCS",
+        yrange = 0.0..=12.0,
+
+        series = {
+            "rx_mcs" => |_iface: &Interface, client: Option<&Client>| {
+                client.map(|c| c.rx.mcs.parse::<f32>().unwrap_or(0.0)).unwrap_or(0.0)
+            },
+            // TX only if bulk_ap_stats is enabled
+            "tx_mcs" => |_iface: &Interface, client: Option<&Client>| {
+                if self.bulk_ap_stats {
+                    client.map(|c| c.tx.mcs.parse::<f32>().unwrap_or(0.0)).unwrap_or(0.0)
+                } else { 0.0 }
+            }
+        },
+
+        tooltip = |tui, stats| {
+            let (iface_opt, client_opt) = find_client_interface(stats, self.client_ip.unwrap());
+            if let Some(_iface) = iface_opt {
+                if let Some(client) = client_opt {
+                    let color = series_color("rx_mcs");
+                    tui.colored_label(color, format!("RX MCS: {}", client.rx.mcs));
+                    tui.label(format!("RX bitrate: {} Mbps", client.rx.bitrate_mbps));
+                    if self.bulk_ap_stats {
+                        let color = series_color("tx_mcs");
+                        tui.colored_label(color, format!("TX MCS: {}", client.tx.mcs));
+                        tui.label(format!("TX bitrate: {} Mbps", client.tx.bitrate_mbps));
+                    }
+                }
+            }
+        }
+    );
+
+    make_ap_series_graph!(
+        fn draw_ap_interface_bytes_mbps_graph(self, ui, width),
+        title = "Interface RX/TX Mbps",
+        yrange = {
+            let max_mbps = self.history_ap
+                .iter()
+                .flat_map(|ap| &ap.interfaces)
+                .map(|iface| {
+                    let rx = iface.rx_kbytes_s.parse::<f32>().unwrap_or(0.0) * 8.0 / 1000.0;
+                    let tx = iface.tx_kbytes_s.parse::<f32>().unwrap_or(0.0) * 8.0 / 1000.0;
+                    rx.max(tx)
+                })
+                .fold(0.0f32, |a, b| a.max(b));
+            0.0..=(max_mbps * 1.1) // add 10% padding
+        },
+
+        series = {
+            "rx_mbps" => |iface: &Interface, _| iface.rx_kbytes_s.parse::<f32>().unwrap_or(0.0) * 8.0 / 1000.0,
+            "tx_mbps" => |iface: &Interface, _| iface.tx_kbytes_s.parse::<f32>().unwrap_or(0.0) * 8.0 / 1000.0
+        },
+
+        tooltip = |tui, stats| {
+            let (iface_opt, _) = find_client_interface(stats, self.client_ip.unwrap());
+            if let Some(iface) = iface_opt {
+                tui.colored_label(series_color("rx_mbps"), format!("RX: {:.2} Mbps", iface.rx_kbytes_s.parse::<f32>().unwrap_or(0.0) * 8.0 / 1000.0));
+                tui.colored_label(series_color("tx_mbps"), format!("TX: {:.2} Mbps", iface.tx_kbytes_s.parse::<f32>().unwrap_or(0.0) * 8.0 / 1000.0));
+            }
+        }
+    );
+
+    make_ap_series_graph!(
+        fn draw_ap_interface_quality_graph(self, ui, width),
+        title = "Interface Link Quality",
+        yrange = 0.0..=100.0,
+
+        series = {
+            "link_quality" => |iface: &Interface, _| {
+                let s = &iface.link_quality;  // format: "58/70"
+                if let Some((num, den)) = s.split_once('/') {
+                    let a = num.parse::<f32>().unwrap_or(0.0);
+                    let b = den.parse::<f32>().unwrap_or(1.0);
+                    100.0 * a / b
+                } else { 0.0 }
+            }
+        },
+
+        tooltip = |tui, stats| {
+            let (iface_opt, _) = find_client_interface(stats, self.client_ip.unwrap());
+            if let Some(iface) = iface_opt {
+                let link_quality_percent = iface.link_quality
+                    .split_once('/')
+                    .and_then(|(a, b)| {
+                        let num = a.parse::<f32>().ok()?;
+                        let den = b.parse::<f32>().ok()?;
+                        Some(100.0 * num / den)
+                    })
+                    .unwrap_or(0.0);
+                tui.colored_label(series_color("link_quality"), format!("Link Quality: {} ({}%)", iface.link_quality, link_quality_percent));
+                tui.label(format!("Utilization: {}", iface.if_util));
+                tui.label(format!("Signal: {} dBm, Noise: {} dBm", iface.signal_dbm, iface.noise_dbm));
+            }
+        }
+    );
 
     fn draw_network_graph(
         &self,

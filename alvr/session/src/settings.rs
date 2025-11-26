@@ -374,6 +374,13 @@ pub struct HTTPserver {
     #[schema(gui(slider(min = 0.1, max = 10.0, step = 0.1)), suffix = "seconds")]
     pub request_interval: f32,
 
+    #[schema(strings(
+        display_name = "Bulk statistics?",
+        help = "Enable it if the AP sends the full set of collected statistics. Disabled it if only a reduced (lightweight) subset is sent."
+    ))]
+    #[schema(flag = "steamvr-restart")]
+    pub are_bulk_stats: bool,
+
     #[schema(strings(display_name = "Fetch from",))]
     #[schema(flag = "steamvr-restart")]
     pub fetch_from: FetchSide,
@@ -1550,6 +1557,7 @@ pub fn session_settings_default() -> SettingsDefault {
                             ap_ip: "192.168.1.1".to_string(),
                             http_port: 8080,
                             request_interval: 0.25,
+                            are_bulk_stats: false,
                             fetch_from: FetchSideDefault {
                                 Client: FetchSideClientDefault { auto_ap_ip: true },
                                 variant: FetchSideDefaultVariant::Client,

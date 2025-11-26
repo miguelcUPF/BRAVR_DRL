@@ -2,7 +2,7 @@ use crate::{
     sarsa_agent::SarsaAgent, sarsa_agent::SarsaAgentConfig, FfiDynamicEncoderParams,
     FILESYSTEM_LAYOUT,
 };
-use alvr_common::{info, warn, APStats, Client, Interface, SlidingWindowAverage};
+use alvr_common::{info, warn, APStats, Client, Interface, SlidingWindowAverage, find_client_interface};
 use alvr_events::{EventType, HeuristicStats, NominalBitrateStats, SARSAStats};
 use alvr_session::{
     get_profile_config, settings_schema::Switch, AveragingStrategy, BitrateAdaptiveFramerateConfig,
@@ -137,29 +137,6 @@ impl BitrateManager {
         }
     }
 
-    pub fn find_client_interface(
-        &self,
-        ap_stats: &APStats,
-        client_ip: IpAddr,
-    ) -> (Option<Interface>, Option<Client>) {
-        let mut interface = None;
-        let mut client_ap_stats = None;
-
-        for iface in &ap_stats.interfaces {
-            for client in &iface.clients {
-                if client.ip.parse::<IpAddr>().ok() == Some(client_ip) {
-                    interface = Some(iface.clone());
-                    client_ap_stats = Some(client.clone());
-                    break;
-                }
-            }
-            if client_ap_stats.is_some() {
-                break;
-            }
-        }
-        (interface, client_ap_stats)
-    }
-
     // Calculates normalized MCS [0.0, 1.0] and Airtime Utilization [0.0, 1.0]
     // Returns (mcs_val, air_val)
     fn get_state_ap_stats(&mut self) -> (f32, f32) {
@@ -179,7 +156,7 @@ impl BitrateManager {
 
         for (i, ap_stats) in self.ap_stats_buffer.iter().enumerate() {
             // 1. Extract Client MCS
-            let (iface_opt, client_opt) = self.find_client_interface(ap_stats, self.client_ip);
+            let (iface_opt, client_opt) = find_client_interface(ap_stats, self.client_ip);
 
             if let Some(client) = client_opt {
                 if let Ok(mcs) = client.rx.mcs.parse::<f32>() {

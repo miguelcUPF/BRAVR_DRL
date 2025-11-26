@@ -2,7 +2,7 @@ use alvr_common::{info, APStats, DeviceMotion, LogEntry, Pose};
 use alvr_packets::{AudioDevicesList, ButtonValue};
 use alvr_session::SessionConfig;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration, net::IpAddr};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct StatisticsSummary {
@@ -177,7 +177,8 @@ pub enum EventType {
     GraphNetworkStatistics(GraphNetworkStatistics),
     HeuristicStats(HeuristicStats),
     SARSAStats(SARSAStats),
-    APStatistics(APStats),
+    APStats(APStats),
+    ClientIp(IpAddr),
     Tracking(Box<TrackingEvent>),
     Buttons(Vec<ButtonEvent>),
     Haptics(HapticsEvent),

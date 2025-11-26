@@ -9,7 +9,7 @@ use alvr_common::parking_lot::{Condvar, Mutex};
 use alvr_events::EventType;
 use alvr_gui_common::theme;
 use alvr_packets::{PathValuePair, ServerRequest};
-use alvr_session::SessionConfig;
+use alvr_session::{SessionConfig, BitrateMode};
 use eframe::egui::{
     self, style::Margin, Align, CentralPanel, Frame, Layout, RichText, SidePanel, Stroke,
 };
@@ -165,7 +165,11 @@ impl eframe::App for Dashboard {
                 EventType::StatisticsSummary(statistics) => {
                     self.statistics_tab.update_statistics(statistics)
                 }
-                EventType::SARSAStats(statistics) => self.statistics_tab.update_sarsa_stats(statistics),
+                EventType::SARSAStats(statistics) => {
+                    self.statistics_tab.update_sarsa_stats(statistics)
+                }
+                EventType::APStats(statistics) => self.statistics_tab.update_ap_stats(statistics),
+                EventType::ClientIp(ip) => self.statistics_tab.update_client_ip(ip),
                 EventType::Session(session) => {
                     let settings = session.to_settings();
 
@@ -179,6 +183,17 @@ impl eframe::App for Dashboard {
                         }
 
                         self.just_opened = false;
+                    }
+
+                    let config_mode = settings.video.bitrate.mode;
+
+                    match config_mode {
+                        BitrateMode::Sarsa {http_server, .. } => {
+                            if http_server.are_bulk_stats {
+                                self.statistics_tab.enable_bulk_ap_stats();
+                            }
+                        }
+                        _ => (),
                     }
 
                     self.session = Some(*session);
