@@ -586,6 +586,14 @@ pub enum BitrateMode {
         #[schema(gui(slider(min = 0.0, max = 5.0, logarithmic)))]
         w_rtt: f32,
 
+        #[schema(strings(
+            display_name = "Reward: volatility weight",
+            help = "Importance of avoiding action direction changes (i.e., oscillations)"
+        ))]
+        #[schema(flag = "steamvr-restart")]
+        #[schema(gui(slider(min = 0.0, max = 5.0, logarithmic)))]
+        w_vol: f32,
+
         #[schema(strings(display_name = "SARSA agent configuration"))]
         agent_config: SARSAConfig,
     },
@@ -1573,6 +1581,7 @@ pub fn session_settings_default() -> SettingsDefault {
                         w_bitrate: 1.0,
                         w_nfr: 4.0,
                         w_rtt: 4.0,
+                        w_vol: 0.5,
                         agent_config: SARSAConfigDefault {
                             load_model: false,
                             save_model: true,

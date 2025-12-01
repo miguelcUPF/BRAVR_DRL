@@ -2,7 +2,9 @@ use crate::{
     sarsa_agent::SarsaAgent, sarsa_agent::SarsaAgentConfig, FfiDynamicEncoderParams,
     FILESYSTEM_LAYOUT,
 };
-use alvr_common::{info, warn, APStats, Client, Interface, SlidingWindowAverage, find_client_interface};
+use alvr_common::{
+    find_client_interface, info, warn, APStats, Client, Interface, SlidingWindowAverage,
+};
 use alvr_events::{EventType, HeuristicStats, NominalBitrateStats, SARSAStats};
 use alvr_session::{
     get_profile_config, settings_schema::Switch, AveragingStrategy, BitrateAdaptiveFramerateConfig,
@@ -49,6 +51,8 @@ pub struct BitrateManager {
 
     sarsa_agent: Option<SarsaAgent>,
     prev_raw_vals: Option<(f32, f32, f32)>,
+    prev_action: Option<f32>,
+    current_action: Option<f32>,
 
     max_ap_history: usize,
     ap_stats_buffer: VecDeque<APStats>,
@@ -128,6 +132,8 @@ impl BitrateManager {
 
             sarsa_agent: None,
             prev_raw_vals: None,
+            prev_action: None,
+            current_action: None,
 
             max_ap_history,
             ap_stats_buffer: VecDeque::with_capacity(max_ap_history),
@@ -312,7 +318,23 @@ impl BitrateManager {
             0.0
         };
 
-        let raw_reward = cfg.w_bitrate * r_bitrate - cfg.w_nfr * p_nfr - cfg.w_rtt * p_rtt;
+        // 4. Volatility penalty
+        let mut p_vol = 0.0;
+        if let (Some(prev), Some(curr)) = (self.prev_action, self.current_action) {
+            let ps = prev.signum();
+            let cs = curr.signum();
+
+            p_vol = if ps == cs {
+                0.0 // same sign (or both zero)
+            } else if ps == 0.0 || cs == 0.0 {
+                0.5 // one of them is zero → half penalty
+            } else {
+                1.0 // + ↔ - → full penalty
+            };
+        }
+
+        let raw_reward =
+            cfg.w_bitrate * r_bitrate - cfg.w_nfr * p_nfr - cfg.w_rtt * p_rtt - cfg.w_vol * p_vol;
 
         let reward = raw_reward.clamp(-50.0, 1.0); // to prevent infinite values
 
@@ -508,6 +530,7 @@ impl BitrateManager {
                     w_bitrate,
                     w_nfr,
                     w_rtt,
+                    w_vol,
                     agent_config,
                     ..
                 } => {
@@ -535,6 +558,7 @@ impl BitrateManager {
                         w_bitrate: *w_bitrate,
                         w_nfr: *w_nfr,
                         w_rtt: *w_rtt,
+                        w_vol: *w_vol,
                         model_path: model_path_buf,
                         load_model: agent_config.load_model,
                         save_model: agent_config.save_model,
@@ -842,6 +866,9 @@ impl BitrateManager {
                 // 6. Store current state and action inside the agent for the next update
                 agent.s_prev = Some(s_t.shallow_clone());
                 agent.a_prev_idx = Some(a_t_idx);
+
+                self.prev_action = self.current_action;
+                self.current_action = Some(a_t_value);
 
                 bitrate_bps
             }
