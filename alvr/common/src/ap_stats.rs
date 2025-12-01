@@ -124,6 +124,8 @@ pub struct RxStats {
     pub packets: String,
     #[serde(default)]
     pub bytes: String,
+    #[serde(default)]
+    pub duration: String, // in microseconds
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -144,4 +146,6 @@ pub struct TxStats {
     pub retries: String,
     #[serde(default)]
     pub failed: String,
+    #[serde(default)]
+    pub duration: String, // in microseconds
 }
