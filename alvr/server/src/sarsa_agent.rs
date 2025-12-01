@@ -30,6 +30,7 @@ pub struct SarsaAgentConfig {
     pub w_nfr: f32,
     pub w_rtt: f32,
     pub w_vol: f32,
+    pub w_fairness: f32,
 
     // File loading/saving
     pub model_path: PathBuf,

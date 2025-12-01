@@ -2,26 +2,30 @@ use crate::{
     sarsa_agent::SarsaAgent, sarsa_agent::SarsaAgentConfig, FfiDynamicEncoderParams,
     FILESYSTEM_LAYOUT,
 };
-use alvr_common::{
-    find_client_interface, info, warn, APStats, SlidingWindowAverage,
-};
+use alvr_common::{find_client_interface, info, warn, APStats, SlidingWindowAverage};
 use alvr_events::{EventType, HeuristicStats, NominalBitrateStats, SARSAStats};
 use alvr_session::{
     get_profile_config, settings_schema::Switch, AveragingStrategy, BitrateAdaptiveFramerateConfig,
     BitrateConfig, BitrateMode, WindowType,
 };
+
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     net::IpAddr,
     time::{Duration, Instant},
 };
-use tokio_tungstenite::tungstenite::protocol::frame;
 
 use rand::distributions::Uniform;
 use rand::{thread_rng, Rng};
 use tch::Tensor;
 
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
+
+struct ClientAirtimeInfo {
+    last_tx_us: u64,
+    last_rx_us: u64,
+    last_time_ms: u64,
+}
 
 pub struct BitrateManager {
     client_ip: IpAddr,
@@ -56,9 +60,11 @@ pub struct BitrateManager {
 
     max_ap_history: usize,
     ap_stats_buffer: VecDeque<APStats>,
+
+    client_airtime_history: HashMap<String, ClientAirtimeInfo>,
     prev_busy_time_ms: Option<f32>,
     prev_active_time_ms: Option<f32>,
-    last_ap_stats: (f32, f32),
+    last_state_ap_stats: (f32, f32),
 }
 impl BitrateManager {
     pub fn new(
@@ -137,24 +143,26 @@ impl BitrateManager {
 
             max_ap_history,
             ap_stats_buffer: VecDeque::with_capacity(max_ap_history),
+
+            client_airtime_history: HashMap::new(),
             prev_busy_time_ms: Some(0.0),
             prev_active_time_ms: Some(0.0),
-            last_ap_stats: (0.0, 0.0),
+            last_state_ap_stats: (0.0, 0.0),
         }
     }
 
-    // Calculates normalized MCS [0.0, 1.0] and Airtime Utilization [0.0, 1.0]
-    // Returns (mcs_val, air_val)
+    // Calculates normalized MCS [0.0, 1.0] and Channel busy fraction [0.0, 1.0]
+    // Returns (mcs_val, ch_busy_frac)
     fn get_state_ap_stats(&mut self) -> (f32, f32) {
         // Return previous state vector or zeros if no stats received yet
         if self.ap_stats_buffer.is_empty() {
             warn!("AP stats buffer is empty");
-            return self.last_ap_stats;
+            return self.last_state_ap_stats;
         }
 
         let mut mcs_sum = 0.0;
         let mut mcs_count = 0.0;
-        let mut airtime_utilization = 0.0;
+        let mut ch_busy_frac = 0.0;
 
         let last_idx = self.ap_stats_buffer.len().saturating_sub(1);
 
@@ -169,7 +177,7 @@ impl BitrateManager {
                 }
             }
 
-            // 2. Calculate Airtime (using cumulative counters from the latest stats entry)
+            // 2. Calculate Channel busy fraction (using cumulative counters from the latest stats entry)
             if i == last_idx {
                 if let Some(iface) = iface_opt {
                     let busy = iface.ch_busy_time_ms.parse::<f32>().unwrap_or(0.0);
@@ -183,7 +191,7 @@ impl BitrateManager {
                     let active_delta = active - prev_active;
 
                     if active_delta > 0.0 {
-                        airtime_utilization = (busy_delta / active_delta).clamp(0.0, 1.0);
+                        ch_busy_frac = (busy_delta / active_delta).clamp(0.0, 1.0);
                     }
 
                     // Store current counters for the next interval
@@ -192,9 +200,6 @@ impl BitrateManager {
                 }
             }
         }
-
-        // Clear buffer so we don't re-process old stats
-        self.ap_stats_buffer.clear();
 
         // Normalize MCS based on hardware max (e.g., 11 for WiFi 6)
         let mcs_avg = if mcs_count > 0.0 {
@@ -205,9 +210,9 @@ impl BitrateManager {
         let max_mcs = 11.0;
         let mcs_norm = (mcs_avg / max_mcs).clamp(0.0, 1.0);
 
-        self.last_ap_stats = (mcs_norm, airtime_utilization);
+        self.last_state_ap_stats = (mcs_norm, ch_busy_frac);
 
-        (mcs_norm, airtime_utilization)
+        (mcs_norm, ch_busy_frac)
     }
 
     pub fn build_state_vector(&mut self) -> Tensor {
@@ -237,7 +242,7 @@ impl BitrateManager {
             (self.last_target_bitrate_bps / (cfg.max_bitrate_mbps * 1e6)).clamp(0.0, 1.0);
 
         // 4. AP Statistics
-        let (mcs_val, air_val) = self.get_state_ap_stats();
+        let (mcs_val, ch_busy_frac_val) = self.get_state_ap_stats();
 
         // 5. Trends (deltas), i.e., velocity of change
         let (d_rtt, d_nfr, d_mcs) = if let Some((prev_rtt, prev_nfr, prev_mcs)) = self.prev_raw_vals
@@ -260,7 +265,7 @@ impl BitrateManager {
             rtt_val,
             bitrate_util,
             mcs_val,
-            air_val,
+            ch_busy_frac_val,
             d_rtt,
             d_nfr,
             d_mcs,
@@ -277,17 +282,125 @@ impl BitrateManager {
             .unsqueeze(0)
     }
 
+    fn compute_airtime_fraction(
+        &mut self,
+        client_ip: &String,
+        tx_us: u64,
+        rx_us: u64,
+        now_ms: u64,
+    ) -> Option<f32> {
+        // Retrieve previous record
+        let prev_info = self.client_airtime_history.get(client_ip);
+
+        if let Some(prev) = prev_info {
+            // Detect resets or anomalies
+            if tx_us < prev.last_tx_us || rx_us < prev.last_rx_us || now_ms <= prev.last_time_ms {
+                self.client_airtime_history.insert(
+                    client_ip.clone(),
+                    ClientAirtimeInfo {
+                        last_tx_us: tx_us,
+                        last_rx_us: rx_us,
+                        last_time_ms: now_ms,
+                    },
+                );
+                return None;
+            }
+
+            let delta_tx = tx_us - prev.last_tx_us;
+            let delta_rx = rx_us - prev.last_rx_us;
+            let delta_time_us = (now_ms - prev.last_time_ms) * 1000; // ms → μs
+            let delta_airtime_us = delta_tx + delta_rx;
+
+            // Update history for next interval
+            self.client_airtime_history.insert(
+                client_ip.clone(),
+                ClientAirtimeInfo {
+                    last_tx_us: tx_us,
+                    last_rx_us: rx_us,
+                    last_time_ms: now_ms,
+                },
+            );
+
+            Some(delta_airtime_us as f32 / delta_time_us as f32)
+        } else {
+            // First measurement for this client
+            self.client_airtime_history.insert(
+                client_ip.clone(),
+                ClientAirtimeInfo {
+                    last_tx_us: tx_us,
+                    last_rx_us: rx_us,
+                    last_time_ms: now_ms,
+                },
+            );
+            None
+        }
+    }
+
+    fn compute_fairness_penalty(&mut self, client_ip: &IpAddr) -> f32 {
+        let latest_ap_stats = self.ap_stats_buffer.back().unwrap();
+        // Find the client and interface
+        let (iface_opt, client_opt) = find_client_interface(latest_ap_stats, *client_ip);
+        let iface = match iface_opt {
+            Some(i) => i,
+            None => return 0.0,
+        };
+        let client = match client_opt {
+            Some(c) => c,
+            None => return 0.0,
+        };
+
+        // Compute airtime fraction
+        let tx_us = client.tx.duration.parse::<u64>().unwrap_or(0);
+        let rx_us = client.rx.duration.parse::<u64>().unwrap_or(0);
+        let now_ms = client.current_time_ms.parse::<u64>().unwrap_or(0);
+
+        let a_i = self
+            .compute_airtime_fraction(&client.ip, tx_us, rx_us, now_ms)
+            .unwrap_or(0.0);
+
+        // Compute sum of airtime fractions for all BSS clients
+        let mut sum_airtime = 0.0;
+        let clients_clone = iface.clients.clone();
+        for c in clients_clone {
+            if c.ip == client.ip {
+                sum_airtime += a_i;
+            } else {
+                let tx = c.tx.duration.parse::<u64>().unwrap_or(0);
+                let rx = c.rx.duration.parse::<u64>().unwrap_or(0);
+                let now = c.current_time_ms.parse::<u64>().unwrap_or(0);
+                sum_airtime += self
+                    .compute_airtime_fraction(&c.ip, tx, rx, now)
+                    .unwrap_or(0.0);
+            }
+        }
+        if sum_airtime == 0.0 {
+            return 0.0;
+        }
+
+        // Fraction of total BSS airtime
+        let a_i_norm = a_i / sum_airtime;
+
+        // Target fraction
+        let t_i = 1.0 / iface.clients.len().max(1) as f32;
+
+        // Squared error penalty
+        (a_i_norm - t_i).powi(2)
+    }
+
     pub fn compute_reward(&mut self) -> f32 {
+        // Fairness penalty
+        let p_fairness = self.compute_fairness_penalty(&self.client_ip.clone());
+
+        // Bitrate utility (linear normalization)
         let cfg = &self.sarsa_agent.as_ref().unwrap().cfg;
 
-        // 1. Bitrate utility (linear normalization)
         let b_curr_bps = self.last_target_bitrate_bps;
         let b_min_bps = cfg.min_bitrate_mbps * 1e6;
         let b_max_bps = cfg.max_bitrate_mbps * 1e6;
 
         let r_bitrate = ((b_curr_bps - b_min_bps) / (b_max_bps - b_min_bps)).clamp(0.0, 1.0);
 
-        // 2. NFR penalty (if actual < threshold -> penalize)
+        // NFR penalty (if actual < threshold -> penalize)
         let fps_tx = 1.0
             / self
                 .frame_interval_average
@@ -307,7 +420,7 @@ impl BitrateManager {
             0.0
         };
 
-        // 3. RTT penalty (if actual > threshold -> penalize)
+        // RTT penalty (if actual > threshold -> penalize)
         let rtt_ms = self.rtt_average.get_average().as_secs_f32() * 1000.0;
 
         let p_rtt = if rtt_ms > cfg.rtt_target_ms {
@@ -316,7 +429,7 @@ impl BitrateManager {
             0.0
         };
 
-        // 4. Volatility penalty
+        // Volatility penalty
         let mut p_vol = 0.0;
         if let (Some(prev), Some(curr)) = (self.prev_action, self.current_action) {
             let ps = prev.signum();
@@ -331,8 +444,11 @@ impl BitrateManager {
             };
         }
 
-        let raw_reward =
-            cfg.w_bitrate * r_bitrate - cfg.w_nfr * p_nfr - cfg.w_rtt * p_rtt - cfg.w_vol * p_vol;
+        let raw_reward = cfg.w_bitrate * r_bitrate
+            - cfg.w_nfr * p_nfr
+            - cfg.w_rtt * p_rtt
+            - cfg.w_vol * p_vol
+            - cfg.w_fairness * p_fairness;
 
         let reward = raw_reward.clamp(-50.0, 1.0); // to prevent infinite values
 
@@ -529,6 +645,7 @@ impl BitrateManager {
                     w_nfr,
                     w_rtt,
                     w_vol,
+                    w_fairness,
                     agent_config,
                     ..
                 } => {
@@ -557,6 +674,7 @@ impl BitrateManager {
                         w_nfr: *w_nfr,
                         w_rtt: *w_rtt,
                         w_vol: *w_vol,
+                        w_fairness: *w_fairness,
                         model_path: model_path_buf,
                         load_model: agent_config.load_model,
                         save_model: agent_config.save_model,
@@ -804,6 +922,9 @@ impl BitrateManager {
 
                 // 2. Build current state (normalized feature vector)
                 let s_t = self.build_state_vector();
+
+                // Clear buffer so we don't re-process old stats
+                self.ap_stats_buffer.clear();
 
                 // 3. Select next action (ε-greedy)
                 let agent = self

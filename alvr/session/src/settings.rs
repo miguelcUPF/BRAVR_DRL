@@ -594,6 +594,15 @@ pub enum BitrateMode {
         #[schema(gui(slider(min = 0.0, max = 5.0, logarithmic)))]
         w_vol: f32,
 
+        #[schema(strings(
+            display_name = "Reward: airtime fairness weight",
+            help = "Importance of avoiding unfair airtime usage among BSS clients."
+        ))]
+        #[schema(flag = "steamvr-restart")]
+        #[schema(gui(slider(min = 0.0, max = 5.0, logarithmic)))]
+
+        w_fairness: f32,
+
         #[schema(strings(display_name = "SARSA agent configuration"))]
         agent_config: SARSAConfig,
     },
@@ -1582,6 +1591,7 @@ pub fn session_settings_default() -> SettingsDefault {
                         w_nfr: 4.0,
                         w_rtt: 4.0,
                         w_vol: 0.5,
+                        w_fairness: 1.0,
                         agent_config: SARSAConfigDefault {
                             load_model: false,
                             save_model: true,
