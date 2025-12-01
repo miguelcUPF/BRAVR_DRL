@@ -248,6 +248,7 @@ impl StatisticsTab {
                 if self.bulk_ap_stats {
                     self.draw_ap_clients_rx_mcs_graph(ui, available_width);
                 }
+                self.draw_ap_clients_airtime_graph(ui, available_width);
                 self.draw_ap_interface_channel_activity_graph(ui, available_width);
                 self.draw_ap_clients_count_graph(ui, available_width);
                 self.draw_bulk_ap_graphs(ui, available_width);
@@ -746,6 +747,130 @@ impl StatisticsTab {
                     );
                     tui.colored_label(Color32::BLUE,
                         format!("TX: {:.1}%", (tx_delta * 100.0 / delta_active).clamp(0.0, 100.0))
+                    );
+                }
+            }
+        }
+    );
+
+    make_ap_custom_graph!(
+        fn draw_ap_clients_airtime_graph(self, ui, width),
+        title = "Client Airtime (%)",
+        yrange = 0.0..=100.0,
+
+        paint = |painter: &Painter, to_screen_trans, _i, _iface: &Interface, clients: &Vec<Client>, _client| {
+            let hist = &self.history_ap;
+            if hist.len() < 2 { return; }
+
+            for client in clients {
+                let color = series_color(&client.ip);
+                let mut points = Vec::new();
+
+                let mut prev_tx = None;
+                let mut prev_rx = None;
+                let mut prev_t  = None;
+
+                for (idx, snap) in hist.iter().enumerate() {
+                    // Lookup this client in this snapshot
+                    let c = snap.interfaces
+                        .iter()
+                        .flat_map(|iface| &iface.clients)
+                        .find(|c| c.ip == client.ip);
+
+                    if let Some(c) = c {
+                        let tx_us  = c.tx.duration.parse::<u64>().unwrap_or(0);
+                        let rx_us  = c.rx.duration.parse::<u64>().unwrap_or(0);
+                        let now_ms = c.current_time_ms.parse::<u64>().unwrap_or(0);
+
+                        if let (Some(p_tx), Some(p_rx), Some(p_time)) = (prev_tx, prev_rx, prev_t) {
+
+                            // detect reset / invalid delta
+                            if now_ms > p_time && tx_us >= p_tx && rx_us >= p_rx {
+                                let dt = (now_ms - p_time) * 1000; // ms → μs
+                                if dt > 0 {
+                                    let delta_air = (tx_us - p_tx + rx_us - p_rx) as f32;
+                                    let airtime = (delta_air / dt as f32) * 100.0;
+
+                                    points.push(to_screen_trans * pos2(idx as f32, airtime.clamp(0.0, 100.0)));
+                                }
+                            }
+                        }
+
+                        prev_tx = Some(tx_us);
+                        prev_rx = Some(rx_us);
+                        prev_t  = Some(now_ms);
+                    }
+                }
+
+                if points.len() >= 2 {
+                    draw_lines(painter, points, color);
+                }
+            }
+        },
+
+        tooltip = |tui, stats| {
+            let (iface_opt, _) = find_client_interface(stats, self.client_ip.unwrap());
+            if let Some(iface) = iface_opt {
+                let idx = self.history_ap.iter().position(|s| std::ptr::eq(s, stats));
+                if idx.is_none() || idx.unwrap() == 0 {
+                    // No delta possible at index 0
+                    return;
+                }
+                let i = idx.unwrap();
+
+                let prev_snap = &self.history_ap[i - 1];
+                let curr_snap = &self.history_ap[i];
+
+                let prev_iface = prev_snap.interfaces.iter().find(|x| x.interface == iface.interface);
+                let curr_iface = curr_snap.interfaces.iter().find(|x| x.interface == iface.interface);
+
+                if prev_iface.is_none() || curr_iface.is_none() { return; }
+                let p_if = prev_iface.unwrap();
+                let c_if = curr_iface.unwrap();
+
+                for curr in &c_if.clients {
+                    let color = series_color(&curr.ip);
+
+                    let prev = p_if.clients.iter().find(|cl| cl.ip == curr.ip);
+                    if prev.is_none() {
+                        tui.colored_label(color, format!("{}: (no delta yet)", curr.ip));
+                        continue;
+                    }
+
+                    let prev = prev.unwrap();
+
+                    let p_tx = prev.tx.duration.parse::<u64>().unwrap_or(0);
+                    let p_rx = prev.rx.duration.parse::<u64>().unwrap_or(0);
+                    let p_t  = prev.current_time_ms.parse::<u64>().unwrap_or(0);
+
+                    let c_tx = curr.tx.duration.parse::<u64>().unwrap_or(0);
+                    let c_rx = curr.rx.duration.parse::<u64>().unwrap_or(0);
+                    let c_t  = curr.current_time_ms.parse::<u64>().unwrap_or(0);
+
+                    if c_t <= p_t || c_tx < p_tx || c_rx < p_rx {
+                        tui.colored_label(color, format!("{}: (reset)", curr.ip));
+                        continue;
+                    }
+
+                    let dt = (c_t - p_t) * 1000;
+                    if dt == 0 {
+                        tui.colored_label(color, format!("{}: (no update)", curr.ip));
+                        continue;
+                    }
+
+                    let delta_tx = c_tx - p_tx;
+                    let delta_rx = c_rx - p_rx;
+                    let airtime = ((delta_tx + delta_rx) as f32 / dt as f32) * 100.0;
+
+                    tui.colored_label(
+                        color,
+                        format!(
+                            "{}: {:.1}%  (ΔTX {}µs, ΔRX {}µs)",
+                            curr.ip,
+                            airtime.clamp(0.0, 100.0),
+                            delta_tx,
+                            delta_rx
+                        )
                     );
                 }
             }

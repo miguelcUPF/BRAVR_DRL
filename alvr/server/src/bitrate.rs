@@ -337,7 +337,9 @@ impl BitrateManager {
     }
 
     fn compute_fairness_penalty(&mut self, client_ip: &IpAddr) -> f32 {
-        let latest_ap_stats = self.ap_stats_buffer.back().unwrap();
+        let Some(latest_ap_stats) = self.ap_stats_buffer.back() else {
+            return 0.0;
+        };
         // Find the client and interface
         let (iface_opt, client_opt) = find_client_interface(latest_ap_stats, *client_ip);
         let iface = match iface_opt {
