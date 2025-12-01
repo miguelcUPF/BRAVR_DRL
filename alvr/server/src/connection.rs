@@ -636,7 +636,7 @@ fn connection_pipeline(
         settings.connection.packet_size as _,
     )?;
 
-    alvr_events::send_event(EventType::ClientIp((client_ip)));
+    alvr_events::send_event(EventType::ClientIp(client_ip));
 
     let mut video_sender = stream_socket.request_stream(VIDEO);
     let game_audio_sender = stream_socket.request_stream(AUDIO);

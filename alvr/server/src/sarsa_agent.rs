@@ -1,5 +1,5 @@
-use alvr_common::{info, warn, error};
-use rand::{distributions::Distribution, distributions::WeightedIndex, thread_rng, Rng};
+use alvr_common::{error, info, warn};
+use rand::{distributions::Distribution, distributions::WeightedIndex, thread_rng};
 use std::path::PathBuf;
 use tch::{nn, nn::Module, nn::OptimizerConfig, Kind, Tensor};
 
@@ -236,7 +236,8 @@ impl SarsaAgent {
                 for var in &variables {
                     let mut grad = var.grad();
                     if grad.defined() {
-                        grad.f_mul_scalar_(clip_coef)
+                        let _ = grad
+                            .f_mul_scalar_(clip_coef)
                             .expect("Failed to scale gradient");
                     }
                 }
@@ -256,8 +257,8 @@ impl SarsaAgent {
                 if let Some(main) = main_vars.get(name) {
                     // tgt = (1 - tau) * tgt + tau * main
                     // do it in-place to avoid allocations
-                    tgt.f_mul_scalar_(1.0 - tau).unwrap();
-                    tgt.f_add_(&(main * tau)).unwrap();
+                    let _ = tgt.f_mul_scalar_(1.0 - tau).unwrap();
+                    let _ = tgt.f_add_(&(main * tau)).unwrap();
                 }
             }
         });

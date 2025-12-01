@@ -3,7 +3,7 @@ use crate::{
     FILESYSTEM_LAYOUT,
 };
 use alvr_common::{
-    find_client_interface, info, warn, APStats, Client, Interface, SlidingWindowAverage,
+    find_client_interface, info, warn, APStats, SlidingWindowAverage,
 };
 use alvr_events::{EventType, HeuristicStats, NominalBitrateStats, SARSAStats};
 use alvr_session::{
@@ -146,8 +146,6 @@ impl BitrateManager {
     // Calculates normalized MCS [0.0, 1.0] and Airtime Utilization [0.0, 1.0]
     // Returns (mcs_val, air_val)
     fn get_state_ap_stats(&mut self) -> (f32, f32) {
-        let cfg = &self.sarsa_agent.as_ref().unwrap().cfg;
-
         // Return previous state vector or zeros if no stats received yet
         if self.ap_stats_buffer.is_empty() {
             warn!("AP stats buffer is empty");
