@@ -82,7 +82,7 @@ macro_rules! make_ap_series_graph {
                 move |$tui_ident: &mut Ui, $stats_ident: &APStats| {
                     let (iface_opt, _client_opt) = find_client_interface($stats_ident, client_ip);
                     if iface_opt.is_none() {
-                        $tui_ident.label("Client interface not found");
+                        $tui_ident.label("Interface not found");
                         return;
                     }
 

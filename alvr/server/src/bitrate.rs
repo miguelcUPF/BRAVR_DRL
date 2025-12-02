@@ -434,10 +434,18 @@ impl BitrateManager {
         // Volatility penalty
         let mut p_vol = 0.0;
         if let (Some(prev), Some(curr)) = (self.prev_action, self.current_action) {
-            let a_min = cfg.action_values.iter().min().unwrap();
-            let a_max = cfg.action_values.iter().max().unwrap();
+            let a_min = cfg
+                .action_values
+                .iter()
+                .copied()
+                .fold(f32::INFINITY, |a, b| a.min(b));
+            let a_max = cfg
+                .action_values
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, |a, b| a.max(b));
             let max_diff = a_max - a_min;
-            
+
             p_vol = if prev * curr < 0.0 {
                 // true flip (+ → − or − → +)
                 ((curr - prev).abs() / max_diff).clamp(0.0, 1.0)
