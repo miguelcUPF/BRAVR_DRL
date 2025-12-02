@@ -2,7 +2,7 @@ use alvr_common::{info, APStats, DeviceMotion, LogEntry, Pose};
 use alvr_packets::{AudioDevicesList, ButtonValue};
 use alvr_session::SessionConfig;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, time::Duration, net::IpAddr};
+use std::{net::IpAddr, path::PathBuf, time::Duration};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct StatisticsSummary {
@@ -135,6 +135,8 @@ pub struct SARSAStats {
     pub a_t_idx: i64,         // Current action index (a_t)
     pub a_t_value: f32,       // Current action value (a_t)
     pub matches_argmax: bool, // Whether the current action equals highest Q-value (exploitation) or not (exploration)
+
+    pub r_components: Vec<f32>, // Reward components
 
     pub loss: f32,       // Loss (L_t)
     pub q_val_pred: f32, // Predicted Q value (Q_t)

@@ -243,6 +243,7 @@ impl StatisticsTab {
                 self.draw_sarsa_loss(ui, available_width);
                 self.draw_sarsa_q_values(ui, available_width);
                 self.draw_sarsa_rewards(ui, available_width);
+                self.draw_sarsa_reward_components(ui, available_width);
                 ui.separator();
                 self.draw_ap_clients_tx_mcs_graph(ui, available_width);
                 if self.bulk_ap_stats {
@@ -548,6 +549,80 @@ impl StatisticsTab {
                 } else {
                     ui.label("Type: Explore"); // sampled action differs from argmax
                 }
+            },
+        );
+    }
+
+    fn draw_sarsa_reward_components(&self, ui: &mut Ui, available_width: f32) {
+        if self.history_sarsa.is_empty() {
+            return;
+        }
+
+        let num_components = self.history_sarsa[0].r_components.len();
+
+        // Predefined colors for each reward component
+        let colors: Vec<Color32> = vec![
+            Color32::LIGHT_GREEN,  // bitrate
+            Color32::LIGHT_RED,    // NFR
+            Color32::LIGHT_YELLOW, // RTT
+            Color32::LIGHT_BLUE,   // volatility
+            Color32::LIGHT_GRAY,   // fairness
+        ];
+
+        // Labels for display in tooltip
+        let labels = vec!["Bitrate", "NFR", "RTT", "Volatility", "Fairness"];
+
+        let mut all_values = Vec::new();
+        for snap in &self.history_sarsa {
+            for v in &snap.r_components {
+                all_values.push(*v as f64);
+            }
+        }
+
+        let mut data = statistics::Data::new(all_values);
+        let lower = data.quantile(0.0) as f32;
+
+        let hist = &self.history_sarsa;
+        let colors_paint = colors.clone();
+        let colors_tooltip = colors.clone();
+        let labels_tooltip = labels.clone();
+
+        self.draw_sarsa_graph(
+            ui,
+            available_width,
+            "SARSA Reward Components",
+            lower..=1.05,
+            move |painter, to_screen_trans| {
+                let hist_len = hist.len();
+                if hist_len < 2 {
+                    return;
+                }
+
+                for comp_idx in 0..num_components {
+                    let color = colors_paint[comp_idx % colors_paint.len()];
+                    let mut points = Vec::with_capacity(hist_len);
+
+                    for i in 0..hist_len {
+                        let stats = &hist[i];
+                        let val = stats.r_components[comp_idx];
+                        points.push(to_screen_trans * pos2(i as f32, val));
+                    }
+
+                    if points.len() > 1 {
+                        draw_lines(painter, points, color);
+                    }
+                }
+            },
+            move |ui, stats| {
+                for (idx, val) in stats.r_components.iter().enumerate() {
+                    let color = colors_tooltip[idx % colors_tooltip.len()];
+                    ui.colored_label(color, format!("{}: {:+.4}", labels_tooltip[idx], val));
+                }
+
+                ui.separator();
+
+                let total: f32 = stats.r_components.iter().sum();
+                ui.label(format!("Total reward: {:.4}", total));
             },
         );
     }

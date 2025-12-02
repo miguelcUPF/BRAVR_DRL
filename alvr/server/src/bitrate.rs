@@ -389,7 +389,7 @@ impl BitrateManager {
         (a_i_norm - t_i).powi(2)
     }
 
-    pub fn compute_reward(&mut self) -> f32 {
+    pub fn compute_reward(&mut self) -> (f32, Vec<f32>) {
         // Fairness penalty
         let p_fairness = self.compute_fairness_penalty(&self.client_ip.clone());
 
@@ -454,7 +454,15 @@ impl BitrateManager {
 
         let reward = raw_reward.clamp(-50.0, 1.0); // to prevent infinite values
 
-        reward
+        let reward_components = vec![
+            cfg.w_bitrate * r_bitrate,
+            -cfg.w_nfr * p_nfr,
+            -cfg.w_rtt * p_rtt,
+            -cfg.w_vol * p_vol,
+            -cfg.w_fairness * p_fairness,
+        ];
+
+        (reward, reward_components)
     }
 
     pub fn update_nominal_frame_interval(&mut self, fps: f32) {
@@ -920,7 +928,7 @@ impl BitrateManager {
             }
             BitrateMode::Sarsa { .. } => {
                 // 1. Compute reward from last interval
-                let r_prev = self.compute_reward(); // reward associated with previous (s_{t-1}, a_{t-1})
+                let (r_prev, r_components) = self.compute_reward(); // reward associated with previous (s_{t-1}, a_{t-1})
 
                 // 2. Build current state (normalized feature vector)
                 let s_t = self.build_state_vector();
@@ -978,6 +986,7 @@ impl BitrateManager {
                     a_t_idx,                            // current action index
                     a_t_value,                          // current action value
                     matches_argmax: matches_argmax,     // whether current action matches argmax
+                    r_components,                       // reward components
                     loss: current_loss,                 // current loss
                     q_val_pred: current_q_pred,         // current Q value
                     requested_bitrate_bps: bitrate_bps, // requested bitrate
