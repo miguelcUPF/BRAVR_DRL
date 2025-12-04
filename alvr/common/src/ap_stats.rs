@@ -99,6 +99,8 @@ pub struct Client {
     #[serde(default)]
     pub snr_db: String,
     #[serde(default)]
+    pub is_vr: String,
+    #[serde(default)]
     pub last_comm_ms: String,
     #[serde(default)]
     pub current_time_ms: String,

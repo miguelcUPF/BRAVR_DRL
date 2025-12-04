@@ -969,9 +969,9 @@ impl StatisticsTab {
 
                 for c in &iface.clients {
                     if self.bulk_ap_stats {
-                        tui.label(format!("{}: {} dBm", c.ip, c.signal_dbm));
+                        tui.label(format!("{}: {} dBm (vr? {})", c.ip, c.signal_dbm, c.is_vr));
                     } else {
-                        tui.label(format!("{}", c.ip));
+                        tui.label(format!("{} (vr? {})", c.ip, c.is_vr));
                     }
                 }
             }

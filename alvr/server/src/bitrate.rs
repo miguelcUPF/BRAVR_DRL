@@ -21,10 +21,103 @@ use tch::Tensor;
 
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 
+const STATE_DIMENSION_SARSA: i64 = 9;
+
 struct ClientAirtimeInfo {
     last_tx_us: u64,
     last_rx_us: u64,
     last_time_ms: u64,
+}
+
+fn compute_airtime_fraction_from_history(
+    client_ip: &str,
+    tx_us: u64,
+    rx_us: u64,
+    now_ms: u64,
+    history: &mut HashMap<String, ClientAirtimeInfo>,
+) -> Option<f32> {
+    let entry = history
+        .entry(client_ip.to_string())
+        .or_insert(ClientAirtimeInfo {
+            last_tx_us: tx_us,
+            last_rx_us: rx_us,
+            last_time_ms: now_ms,
+        });
+
+    // Reset or counter wrap
+    if tx_us < entry.last_tx_us || rx_us < entry.last_rx_us || now_ms <= entry.last_time_ms {
+        entry.last_tx_us = tx_us;
+        entry.last_rx_us = rx_us;
+        entry.last_time_ms = now_ms;
+        return None;
+    }
+
+    let d_tx = tx_us - entry.last_tx_us;
+    let d_rx = rx_us - entry.last_rx_us;
+    let dt_us = (now_ms - entry.last_time_ms) * 1000;
+
+    // Update for next call
+    entry.last_tx_us = tx_us;
+    entry.last_rx_us = rx_us;
+    entry.last_time_ms = now_ms;
+
+    Some((d_tx + d_rx) as f32 / dt_us as f32)
+}
+
+fn compute_fairness_metrics_from_history(
+    latest_ap_stats: &APStats,
+    client_ip: &IpAddr,
+    history: &mut HashMap<String, ClientAirtimeInfo>,
+) -> (HashMap<String, f32>, f32) {
+    let mut airtimes: HashMap<String, f32> = HashMap::new();
+    let mut sum_airtime = 0.0;
+
+    // Find the client and interface
+    let (iface_opt, _client_opt) = find_client_interface(latest_ap_stats, *client_ip);
+    let iface = match iface_opt {
+        Some(i) => i,
+        None => return (airtimes, 0.0),
+    };
+
+    // First, compute each VR client's airtime fraction
+    for c in &iface.clients {
+        if !c.is_vr.parse::<bool>().unwrap_or(false) {
+            continue;
+        }
+        let tx_us = c.tx.duration.parse::<u64>().unwrap_or(0);
+        let rx_us = c.rx.duration.parse::<u64>().unwrap_or(0);
+        let now_ms = c.current_time_ms.parse::<u64>().unwrap_or(0);
+
+        let airtime = compute_airtime_fraction_from_history(&c.ip, tx_us, rx_us, now_ms, history)
+            .unwrap_or(0.0);
+        airtimes.insert(c.ip.clone(), airtime);
+        sum_airtime += airtime;
+    }
+
+    // Normalize each client's airtime fraction
+    let mut normalized: HashMap<String, f32> = HashMap::new();
+    for (ip, a_i) in &airtimes {
+        normalized.insert(
+            ip.clone(),
+            if sum_airtime > 0.0 {
+                a_i / sum_airtime
+            } else {
+                0.0
+            },
+        );
+    }
+
+    // Compute Jain fairness index
+    let n = normalized.len() as f32;
+    let sum_ai = normalized.values().sum::<f32>();
+    let sum_ai_sq = normalized.values().map(|x| x.powi(2)).sum::<f32>();
+    let jain_index = if n > 0.0 && sum_ai_sq > 0.0 {
+        sum_ai.powi(2) / (n * sum_ai_sq)
+    } else {
+        1.0
+    };
+
+    (normalized, jain_index)
 }
 
 pub struct BitrateManager {
@@ -61,7 +154,8 @@ pub struct BitrateManager {
     max_ap_history: usize,
     ap_stats_buffer: VecDeque<APStats>,
 
-    client_airtime_history: HashMap<String, ClientAirtimeInfo>,
+    client_airtime_history_state: HashMap<String, ClientAirtimeInfo>,
+    client_airtime_history_reward: HashMap<String, ClientAirtimeInfo>,
     prev_busy_time_ms: Option<f32>,
     prev_active_time_ms: Option<f32>,
     last_state_ap_stats: (f32, f32),
@@ -144,7 +238,8 @@ impl BitrateManager {
             max_ap_history,
             ap_stats_buffer: VecDeque::with_capacity(max_ap_history),
 
-            client_airtime_history: HashMap::new(),
+            client_airtime_history_state: HashMap::new(),
+            client_airtime_history_reward: HashMap::new(),
             prev_busy_time_ms: Some(0.0),
             prev_active_time_ms: Some(0.0),
             last_state_ap_stats: (0.0, 0.0),
@@ -244,6 +339,16 @@ impl BitrateManager {
         // 4. AP Statistics
         let (mcs_val, ch_busy_frac_val) = self.get_state_ap_stats();
 
+        let mut jain_airtime = 1.0;
+        if let Some(latest_ap_stats) = self.ap_stats_buffer.back() {
+            let airtime_history = &mut self.client_airtime_history_state;
+            let (_, j) = compute_fairness_metrics_from_history(
+                latest_ap_stats,
+                &self.client_ip,
+                airtime_history,
+            );
+            jain_airtime = j;
+        }
         // 5. Trends (deltas), i.e., velocity of change
         let (d_rtt, d_nfr, d_mcs) = if let Some((prev_rtt, prev_nfr, prev_mcs)) = self.prev_raw_vals
         {
@@ -259,13 +364,14 @@ impl BitrateManager {
         // Update history
         self.prev_raw_vals = Some((raw_rtt_val, nfr_val, mcs_val));
 
-        // Build state vector of shape [1, 8]
+        // Build state vector of shape [1, 9]
         let state_vec = vec![
             nfr_val,
             rtt_val,
             bitrate_util,
             mcs_val,
             ch_busy_frac_val,
+            jain_airtime,
             d_rtt,
             d_nfr,
             d_mcs,
@@ -282,117 +388,25 @@ impl BitrateManager {
             .unsqueeze(0)
     }
 
-    fn compute_airtime_fraction(
-        &mut self,
-        client_ip: &String,
-        tx_us: u64,
-        rx_us: u64,
-        now_ms: u64,
-    ) -> Option<f32> {
-        // Retrieve previous record
-        let prev_info = self.client_airtime_history.get(client_ip);
-
-        if let Some(prev) = prev_info {
-            // Detect resets or anomalies
-            if tx_us < prev.last_tx_us || rx_us < prev.last_rx_us || now_ms <= prev.last_time_ms {
-                self.client_airtime_history.insert(
-                    client_ip.clone(),
-                    ClientAirtimeInfo {
-                        last_tx_us: tx_us,
-                        last_rx_us: rx_us,
-                        last_time_ms: now_ms,
-                    },
-                );
-                return None;
-            }
-
-            let delta_tx = tx_us - prev.last_tx_us;
-            let delta_rx = rx_us - prev.last_rx_us;
-            let delta_time_us = (now_ms - prev.last_time_ms) * 1000; // ms → μs
-            let delta_airtime_us = delta_tx + delta_rx;
-
-            // Update history for next interval
-            self.client_airtime_history.insert(
-                client_ip.clone(),
-                ClientAirtimeInfo {
-                    last_tx_us: tx_us,
-                    last_rx_us: rx_us,
-                    last_time_ms: now_ms,
-                },
-            );
-
-            Some(delta_airtime_us as f32 / delta_time_us as f32)
-        } else {
-            // First measurement for this client
-            self.client_airtime_history.insert(
-                client_ip.clone(),
-                ClientAirtimeInfo {
-                    last_tx_us: tx_us,
-                    last_rx_us: rx_us,
-                    last_time_ms: now_ms,
-                },
-            );
-            None
-        }
-    }
-
-    fn compute_fairness_penalty(&mut self, client_ip: &IpAddr) -> f32 {
-        let Some(latest_ap_stats) = self.ap_stats_buffer.back() else {
-            return 0.0;
-        };
-        // Find the client and interface
-        let (iface_opt, client_opt) = find_client_interface(latest_ap_stats, *client_ip);
-        let iface = match iface_opt {
-            Some(i) => i,
-            None => return 0.0,
-        };
-        let client = match client_opt {
-            Some(c) => c,
-            None => return 0.0,
-        };
-
-        // Compute airtime fraction
-        let tx_us = client.tx.duration.parse::<u64>().unwrap_or(0);
-        let rx_us = client.rx.duration.parse::<u64>().unwrap_or(0);
-        let now_ms = client.current_time_ms.parse::<u64>().unwrap_or(0);
-
-        let a_i = self
-            .compute_airtime_fraction(&client.ip, tx_us, rx_us, now_ms)
-            .unwrap_or(0.0);
-
-        // Compute sum of airtime fractions for all BSS clients
-        let mut sum_airtime = 0.0;
-        let clients_clone = iface.clients.clone();
-        for c in clients_clone {
-            if c.ip == client.ip {
-                sum_airtime += a_i;
-            } else {
-                let tx = c.tx.duration.parse::<u64>().unwrap_or(0);
-                let rx = c.rx.duration.parse::<u64>().unwrap_or(0);
-                let now = c.current_time_ms.parse::<u64>().unwrap_or(0);
-                sum_airtime += self
-                    .compute_airtime_fraction(&c.ip, tx, rx, now)
-                    .unwrap_or(0.0);
-            }
-        }
-        if sum_airtime == 0.0 {
-            return 0.0;
-        }
-
-        // Fraction of total BSS airtime
-        let a_i_norm = a_i / sum_airtime;
-
-        // Target fraction
-        let t_i = 1.0 / iface.clients.len().max(1) as f32;
-
-        // Squared error penalty
-        (a_i_norm - t_i).powi(2)
-    }
-
     pub fn compute_reward(&mut self) -> (f32, Vec<f32>) {
         // Fairness penalty
-        let p_fairness = self.compute_fairness_penalty(&self.client_ip.clone());
+        let mut p_fairness = 0.0;
+        if let Some(latest_ap_stats) = self.ap_stats_buffer.back() {
+            let airtime_reward = &mut self.client_airtime_history_reward;
+            let (normalized_airtime, _) = compute_fairness_metrics_from_history(
+                latest_ap_stats,
+                &self.client_ip,
+                airtime_reward,
+            );
 
+            p_fairness =
+                if let Some(&a_i_norm) = normalized_airtime.get(&self.client_ip.to_string()) {
+                    let t_i = 1.0 / normalized_airtime.len().max(1) as f32; // target fraction
+                    (a_i_norm - t_i).powi(2)
+                } else {
+                    0.0
+                };
+        }
         // Bitrate utility (linear normalization)
         let cfg = &self.sarsa_agent.as_ref().unwrap().cfg;
 
@@ -670,7 +684,7 @@ impl BitrateManager {
                 } => {
                     self.update_interval_s = Duration::from_secs_f32(*update_interval_s);
 
-                    let state_dim = 8;
+                    let state_dim = STATE_DIMENSION_SARSA;
 
                     let action_values = &agent_config.action_multipliers;
 
