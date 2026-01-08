@@ -5,11 +5,14 @@ use self::components::{
     ConnectionsTab, LogsTab, NotificationBar, SettingsTab, SetupWizard, SetupWizardRequest,
 };
 use crate::{dashboard::components::StatisticsTab, DataSources};
-use alvr_common::parking_lot::{Condvar, Mutex};
+use alvr_common::{
+    parking_lot::{Condvar, Mutex},
+    warn,
+};
 use alvr_events::EventType;
 use alvr_gui_common::theme;
 use alvr_packets::{PathValuePair, ServerRequest};
-use alvr_session::{SessionConfig, BitrateMode};
+use alvr_session::{settings_schema::Switch, BitrateMode, SessionConfig};
 use eframe::egui::{
     self, style::Margin, Align, CentralPanel, Frame, Layout, RichText, SidePanel, Stroke,
 };
@@ -185,15 +188,18 @@ impl eframe::App for Dashboard {
                         self.just_opened = false;
                     }
 
-                    let config_mode = settings.video.bitrate.mode;
-
-                    match config_mode {
-                        BitrateMode::Sarsa {http_server, .. } => {
-                            if http_server.are_bulk_stats {
+                    let http_server = settings.video.bitrate.http_server;
+                    match http_server {
+                        Switch::Enabled(server) => {
+                            if server.are_bulk_stats {
                                 self.statistics_tab.enable_bulk_ap_stats();
                             }
                         }
-                        _ => (),
+                        Switch::Disabled => {
+                            if let BitrateMode::Sarsa { .. } = &settings.video.bitrate.mode {
+                                warn!("HTTP server is disabled but SARSA is enabled. Some features may not work.");
+                            }
+                        }
                     }
 
                     self.session = Some(*session);

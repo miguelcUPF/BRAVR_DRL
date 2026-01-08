@@ -517,13 +517,6 @@ pub enum BitrateMode {
     },
     #[schema(collapsible, strings(display_name = "SARSA"))]
     Sarsa {
-        #[schema(strings(
-            display_name = "AP's HTTP Server",
-            help = "Request network statistics from an access point's HTTP server"
-        ))]
-        #[schema(flag = "steamvr-restart")]
-        http_server: HTTPserver,
-
         #[schema(strings(display_name = "Adjustment period (s)"))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.1, max = 1.0, logarithmic)), suffix = "s")]
@@ -600,7 +593,6 @@ pub enum BitrateMode {
         ))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.0, max = 5.0, logarithmic)))]
-
         w_fairness: f32,
 
         #[schema(strings(display_name = "SARSA agent configuration"))]
@@ -637,6 +629,13 @@ This has an effect only on AMD GPUs."
     ))]
     #[schema(flag = "steamvr-restart")]
     pub image_corruption_fix: bool,
+
+    #[schema(strings(
+        display_name = "AP's HTTP Server",
+        help = "Request network statistics from an access point's HTTP server"
+    ))]
+    #[schema(flag = "steamvr-restart")]
+    pub http_server: Switch<HTTPserver>,
 }
 
 #[repr(u8)]
@@ -1570,16 +1569,6 @@ pub fn session_settings_default() -> SettingsDefault {
                     },
                     Sarsa: BitrateModeSarsaDefault {
                         gui_collapsed: true,
-                        http_server: HTTPserverDefault {
-                            ap_ip: "192.168.1.1".to_string(),
-                            http_port: 8080,
-                            request_interval: 0.25,
-                            are_bulk_stats: false,
-                            fetch_from: FetchSideDefault {
-                                Client: FetchSideClientDefault { auto_ap_ip: true },
-                                variant: FetchSideDefaultVariant::Client,
-                            },
-                        },
                         update_interval_s: 0.5,
                         max_bitrate_mbps: 100.0,
                         min_bitrate_mbps: 10.0,
@@ -1616,6 +1605,19 @@ pub fn session_settings_default() -> SettingsDefault {
                     },
                 },
                 image_corruption_fix: false,
+                http_server: SwitchDefault {
+                    enabled: true,
+                    content: HTTPserverDefault {
+                        ap_ip: "192.168.1.1".to_string(),
+                        http_port: 8080,
+                        request_interval: 0.25,
+                        are_bulk_stats: false,
+                        fetch_from: FetchSideDefault {
+                            Client: FetchSideClientDefault { auto_ap_ip: true },
+                            variant: FetchSideDefaultVariant::Client,
+                        },
+                    },
+                },
             },
             preferred_codec: CodecTypeDefault {
                 variant: CodecTypeDefaultVariant::Hevc,
