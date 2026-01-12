@@ -68,8 +68,8 @@ macro_rules! make_ap_series_graph {
                                 None => { pts.push(to_screen_trans * pos2(i as f32, 0.0)); continue; }
                             };
 
-                            let v = ($closure)(&iface, client_opt.as_ref());
-                            pts.push(to_screen_trans * pos2(i as f32, v));
+                            let v = ($closure)(&iface, client_opt);
+                            pts.push(to_screen_trans * pos2(i as f32, v as f32));
                         }
 
                         // deterministic per-series color
@@ -643,7 +643,7 @@ impl StatisticsTab {
                         snap.interfaces.iter()
                             .flat_map(|iface| &iface.clients)
                             .find(|c| c.ip == client.ip)
-                            .map(|c| to_screen_trans * pos2(idx as f32, c.rx.mcs.parse::<f32>().unwrap_or(0.0)))
+                            .and_then(|c| c.rx.mcs.map(|mcs| to_screen_trans * pos2(idx as f32, mcs as f32)))
                     })
                     .collect();
 
@@ -659,7 +659,7 @@ impl StatisticsTab {
                 tui.label(format!("Interface: {}", iface.interface));
                 for c in &iface.clients {
                     let color = series_color(&c.ip);
-                    tui.colored_label(color, format!("{}: RX MCS {}", c.ip, c.rx.mcs));
+                    tui.colored_label(color, format!("{}: RX MCS {}", c.ip, c.rx.mcs.map_or("N/A".to_string(), |v| v.to_string())));
                 }
             }
         }
@@ -681,7 +681,7 @@ impl StatisticsTab {
                         snap.interfaces.iter()
                             .flat_map(|iface| &iface.clients)
                             .find(|c| c.ip == client.ip)
-                            .map(|c| to_screen_trans * pos2(idx as f32, c.tx.mcs.parse::<f32>().unwrap_or(0.0)))
+                            .and_then(|c| c.tx.mcs.map(|mcs| to_screen_trans * pos2(idx as f32, mcs as f32)))
                     })
                     .collect();
 
@@ -697,7 +697,7 @@ impl StatisticsTab {
                 tui.label(format!("Interface: {}", iface.interface));
                 for c in &iface.clients {
                     let color = series_color(&c.ip);
-                    tui.colored_label(color, format!("{}: TX MCS {}", c.ip, c.tx.mcs));
+                    tui.colored_label(color, format!("{}: TX MCS {}", c.ip, c.tx.mcs.map_or("N/A".to_string(), |v| v.to_string())));
                 }
             }
         }
@@ -728,29 +728,27 @@ impl StatisticsTab {
                     .iter()
                     .find(|i| i.interface == iface.interface)
                 {
-                    let act = hist_iface.ch_active_time_ms.parse::<f32>().unwrap_or(0.0);
-                    if act <= 0.0 {
-                        // Cannot compute valid ratios — skip this iteration
-                        continue;
-                    }
-
-                    let busy = hist_iface.ch_busy_time_ms.parse::<f32>().unwrap_or(0.0);
-                    let rx   = hist_iface.ch_rx_time_ms.parse::<f32>().unwrap_or(0.0);
-                    let tx   = hist_iface.ch_tx_time_ms.parse::<f32>().unwrap_or(0.0);
+                    let act = match hist_iface.ch_active_time_ms {
+                        Some(v) if v > 0 => v,
+                        _ => continue, // skip invalid/missing snapshot
+                    };
+                    let busy = match hist_iface.ch_busy_time_ms { Some(v) => v, None => continue };
+                    let rx   = match hist_iface.ch_rx_time_ms   { Some(v) => v, None => continue };
+                    let tx   = match hist_iface.ch_tx_time_ms   { Some(v) => v, None => continue };
 
                     if let (Some(p_busy), Some(p_rx), Some(p_tx), Some(p_active)) =
                         (prev_busy, prev_rx, prev_tx, prev_active)
                     {
                         let delta_active = act - p_active;
-                        if delta_active > 0.0 {
+                        if delta_active > 0 {
                             let x = idx as f32;
 
-                            let busy_p = (busy - p_busy) * 100.0 / delta_active;
+                            let busy_p = (busy - p_busy)  as f32 * 100.0 / delta_active as f32;
                             busy_points.push(to_screen_trans * pos2(x, busy_p));
 
                             if self.bulk_ap_stats {
-                                rx_points.push(to_screen_trans * pos2(x, (rx - p_rx) * 100.0 / delta_active));
-                                tx_points.push(to_screen_trans * pos2(x, (tx - p_tx) * 100.0 / delta_active));
+                                rx_points.push(to_screen_trans * pos2(x, (rx - p_rx) as f32 * 100.0 / delta_active as f32));
+                                tx_points.push(to_screen_trans * pos2(x, (tx - p_tx) as f32 * 100.0 / delta_active as f32));
                             }
                         }
                     }
@@ -794,35 +792,27 @@ impl StatisticsTab {
                 let p = prev_iface.unwrap();
                 let c = curr_iface.unwrap();
 
-                let p_act = p.ch_active_time_ms.parse::<f32>().unwrap_or(0.0);
-                let c_act = c.ch_active_time_ms.parse::<f32>().unwrap_or(0.0);
-                let delta_active = c_act - p_act;
+                if let (Some(p_act), Some(c_act),
+                        Some(p_busy), Some(c_busy),
+                        Some(p_rx),   Some(c_rx),
+                        Some(p_tx),   Some(c_tx)) =
+                    (p.ch_active_time_ms, c.ch_active_time_ms,
+                    p.ch_busy_time_ms,   c.ch_busy_time_ms,
+                    p.ch_rx_time_ms,     c.ch_rx_time_ms,
+                    p.ch_tx_time_ms,     c.ch_tx_time_ms)
+                {
+                    let delta_active = c_act - p_act;
+                    if delta_active <= 0 { return; }
 
-                if delta_active <= 0.0 {
-                    return;
-                }
+                    let busy_p = ((c_busy - p_busy) as f32 * 100.0 / delta_active as f32).clamp(0.0, 100.0);
+                    tui.colored_label(Color32::RED, format!("Busy (channel): {:.1}%", busy_p));
 
-                // Compute deltas exactly like paint()
-                let busy_delta = c.ch_busy_time_ms.parse::<f32>().unwrap_or(0.0)
-                    - p.ch_busy_time_ms.parse::<f32>().unwrap_or(0.0);
-
-                let rx_delta = c.ch_rx_time_ms.parse::<f32>().unwrap_or(0.0)
-                    - p.ch_rx_time_ms.parse::<f32>().unwrap_or(0.0);
-
-                let tx_delta = c.ch_tx_time_ms.parse::<f32>().unwrap_or(0.0)
-                    - p.ch_tx_time_ms.parse::<f32>().unwrap_or(0.0);
-
-                let busy_p = (busy_delta * 100.0 / delta_active).clamp(0.0, 100.0);
-
-                tui.colored_label(Color32::RED, format!("Busy (channel): {:.1}%", busy_p));
-
-                if self.bulk_ap_stats {
-                    tui.colored_label(Color32::GREEN,
-                        format!("RX: {:.1}%", (rx_delta * 100.0 / delta_active).clamp(0.0, 100.0))
-                    );
-                    tui.colored_label(Color32::BLUE,
-                        format!("TX: {:.1}%", (tx_delta * 100.0 / delta_active).clamp(0.0, 100.0))
-                    );
+                    if self.bulk_ap_stats {
+                        let rx_p = ((c_rx - p_rx) as f32 * 100.0 / delta_active as f32).clamp(0.0, 100.0);
+                        let tx_p = ((c_tx - p_tx) as f32 * 100.0 / delta_active as f32).clamp(0.0, 100.0);
+                        tui.colored_label(Color32::GREEN, format!("RX: {:.1}%", rx_p));
+                        tui.colored_label(Color32::BLUE, format!("TX: {:.1}%", tx_p));
+                    }
                 }
             }
         }
@@ -853,9 +843,10 @@ impl StatisticsTab {
                         .find(|c| c.ip == client.ip);
 
                     if let Some(c) = c {
-                        let tx_us  = c.tx.duration.parse::<u64>().unwrap_or(0);
-                        let rx_us  = c.rx.duration.parse::<u64>().unwrap_or(0);
-                        let now_ms = c.current_time_ms.parse::<u64>().unwrap_or(0);
+                        let (tx_us, rx_us, now_ms) = match (c.tx.duration, c.rx.duration, c.current_time_ms) {
+                            (Some(tx), Some(rx), Some(t)) => (tx, rx, t),
+                            _ => continue, // skip this snapshot for this client
+                        };
 
                         if let (Some(p_tx), Some(p_rx), Some(p_time)) = (prev_tx, prev_rx, prev_t) {
 
@@ -914,39 +905,37 @@ impl StatisticsTab {
 
                     let prev = prev.unwrap();
 
-                    let p_tx = prev.tx.duration.parse::<u64>().unwrap_or(0);
-                    let p_rx = prev.rx.duration.parse::<u64>().unwrap_or(0);
-                    let p_t  = prev.current_time_ms.parse::<u64>().unwrap_or(0);
+                    if let (Some(p_tx), Some(p_rx), Some(p_t),
+                            Some(c_tx), Some(c_rx), Some(c_t)) =
+                        (prev.tx.duration, prev.rx.duration, prev.current_time_ms,
+                            curr.tx.duration, curr.rx.duration, curr.current_time_ms)
+                    {
+                        if c_t <= p_t || c_tx < p_tx || c_rx < p_rx {
+                            tui.colored_label(color, format!("{}: (reset)", curr.ip));
+                            continue;
+                        }
 
-                    let c_tx = curr.tx.duration.parse::<u64>().unwrap_or(0);
-                    let c_rx = curr.rx.duration.parse::<u64>().unwrap_or(0);
-                    let c_t  = curr.current_time_ms.parse::<u64>().unwrap_or(0);
+                        let dt = (c_t - p_t) * 1000;
+                        if dt == 0 {
+                            tui.colored_label(color, format!("{}: (no update)", curr.ip));
+                            continue;
+                        }
 
-                    if c_t <= p_t || c_tx < p_tx || c_rx < p_rx {
-                        tui.colored_label(color, format!("{}: (reset)", curr.ip));
-                        continue;
+                        let delta_tx = c_tx - p_tx;
+                        let delta_rx = c_rx - p_rx;
+                        let airtime = ((delta_tx + delta_rx) as f32 / dt as f32) * 100.0;
+
+                        tui.colored_label(
+                            color,
+                            format!(
+                                "{}: {:.1}%  (ΔTX {}µs, ΔRX {}µs)",
+                                curr.ip,
+                                airtime.clamp(0.0, 100.0),
+                                delta_tx,
+                                delta_rx
+                            )
+                        );
                     }
-
-                    let dt = (c_t - p_t) * 1000;
-                    if dt == 0 {
-                        tui.colored_label(color, format!("{}: (no update)", curr.ip));
-                        continue;
-                    }
-
-                    let delta_tx = c_tx - p_tx;
-                    let delta_rx = c_rx - p_rx;
-                    let airtime = ((delta_tx + delta_rx) as f32 / dt as f32) * 100.0;
-
-                    tui.colored_label(
-                        color,
-                        format!(
-                            "{}: {:.1}%  (ΔTX {}µs, ΔRX {}µs)",
-                            curr.ip,
-                            airtime.clamp(0.0, 100.0),
-                            delta_tx,
-                            delta_rx
-                        )
-                    );
                 }
             }
         }
@@ -969,9 +958,14 @@ impl StatisticsTab {
 
                 for c in &iface.clients {
                     if self.bulk_ap_stats {
-                        tui.label(format!("{}: {} dBm (vr? {})", c.ip, c.signal_dbm, c.is_vr));
+                        tui.label(format!(
+                            "{}: {} dBm (vr? {})",
+                            c.ip,
+                            c.signal_dbm.map_or("N/A".to_string(), |v| v.to_string()),
+                            c.is_vr.map_or("N/A".to_string(), |v| v.to_string())
+                        ));
                     } else {
-                        tui.label(format!("{} (vr? {})", c.ip, c.is_vr));
+                        tui.label(format!("{} (vr? {})", c.ip, c.is_vr.map_or("N/A".to_string(), |v| v.to_string())));
                     }
                 }
             }
@@ -985,7 +979,7 @@ impl StatisticsTab {
 
         series = {
             "snr" => |_iface: &Interface, client: Option<&Client>| {
-                client.map(|c| c.snr_db.parse::<f32>().unwrap_or(0.0)).unwrap_or(0.0)
+                client.and_then(|c| c.snr_db.map(|v| v as f32)).unwrap_or(f32::NAN)
             }
         },
 
@@ -994,9 +988,21 @@ impl StatisticsTab {
             if let Some(_iface) = iface_opt {
                 if let Some(client) = client_opt {
                     let color = series_color("snr");
-                    tui.colored_label(color, format!("SNR: {} dB", client.snr_db));
-                    tui.label(format!("Signal: {} dBm", client.signal_dbm));
-                    tui.label(format!("Noise: {} dBm", client.noise_dbm));
+                    tui.colored_label(
+                        color,
+                        format!(
+                            "SNR: {} dB",
+                            client.snr_db.map_or("N/A".to_string(), |v| v.to_string())
+                        )
+                    );
+                    tui.label(format!(
+                        "Signal: {} dBm",
+                        client.signal_dbm.map_or("N/A".to_string(), |v| v.to_string())
+                    ));
+                    tui.label(format!(
+                        "Noise: {} dBm",
+                        client.noise_dbm.map_or("N/A".to_string(), |v| v.to_string())
+                    ));
                 }
             }
         }
@@ -1009,13 +1015,14 @@ impl StatisticsTab {
 
         series = {
             "rx_mcs" => |_iface: &Interface, client: Option<&Client>| {
-                client.map(|c| c.rx.mcs.parse::<f32>().unwrap_or(0.0)).unwrap_or(0.0)
+                client.and_then(|c| c.rx.mcs.map(|v| v as f32)).unwrap_or(f32::NAN)
             },
-            // TX only if bulk_ap_stats is enabled
             "tx_mcs" => |_iface: &Interface, client: Option<&Client>| {
                 if self.bulk_ap_stats {
-                    client.map(|c| c.tx.mcs.parse::<f32>().unwrap_or(0.0)).unwrap_or(0.0)
-                } else { 0.0 }
+                    client.and_then(|c| c.tx.mcs.map(|v| v as f32)).unwrap_or(f32::NAN)
+                } else {
+                    f32::NAN
+                }
             }
         },
 
@@ -1024,12 +1031,23 @@ impl StatisticsTab {
             if let Some(_iface) = iface_opt {
                 if let Some(client) = client_opt {
                     let color = series_color("rx_mcs");
-                    tui.colored_label(color, format!("RX MCS: {}", client.rx.mcs));
-                    tui.label(format!("RX bitrate: {} Mbps", client.rx.bitrate_mbps));
+                    tui.colored_label(color, format!(
+                        "RX MCS: {}",
+                        client.rx.mcs.map_or("N/A".to_string(), |v| v.to_string())
+                    ));
+                    tui.label(format!(
+                        "RX bitrate: {} Mbps",
+                        client.rx.bitrate_mbps.map_or("N/A".to_string(), |v| v.to_string())
+                    ));
                     if self.bulk_ap_stats {
-                        let color = series_color("tx_mcs");
-                        tui.colored_label(color, format!("TX MCS: {}", client.tx.mcs));
-                        tui.label(format!("TX bitrate: {} Mbps", client.tx.bitrate_mbps));
+                        tui.colored_label(series_color("tx_mcs"), format!(
+                            "TX MCS: {}",
+                            client.tx.mcs.map_or("N/A".to_string(), |v| v.to_string())
+                        ));
+                        tui.label(format!(
+                            "TX bitrate: {} Mbps",
+                            client.tx.bitrate_mbps.map_or("N/A".to_string(), |v| v.to_string())
+                        ));
                     }
                 }
             }
@@ -1044,8 +1062,8 @@ impl StatisticsTab {
                 .iter()
                 .flat_map(|ap| &ap.interfaces)
                 .map(|iface| {
-                    let rx = iface.rx_kbytes_s.parse::<f32>().unwrap_or(0.0) * 8.0 / 1000.0;
-                    let tx = iface.tx_kbytes_s.parse::<f32>().unwrap_or(0.0) * 8.0 / 1000.0;
+                    let rx = iface.rx_kbytes_s.unwrap_or(0.0) as f32 * 8.0 / 1000.0;
+                    let tx = iface.tx_kbytes_s.unwrap_or(0.0) as f32 * 8.0 / 1000.0;
                     rx.max(tx)
                 })
                 .fold(0.0f32, |a, b| a.max(b));
@@ -1053,15 +1071,25 @@ impl StatisticsTab {
         },
 
         series = {
-            "rx_mbps" => |iface: &Interface, _| iface.rx_kbytes_s.parse::<f32>().unwrap_or(0.0) * 8.0 / 1000.0,
-            "tx_mbps" => |iface: &Interface, _| iface.tx_kbytes_s.parse::<f32>().unwrap_or(0.0) * 8.0 / 1000.0
+            "rx_mbps" => |iface: &Interface, _| {
+                iface.rx_kbytes_s.map(|v| v as f32 * 8.0 / 1000.0).unwrap_or(f32::NAN)
+            },
+            "tx_mbps" => |iface: &Interface, _| {
+                iface.tx_kbytes_s.map(|v| v as f32 * 8.0 / 1000.0).unwrap_or(f32::NAN)
+            }
         },
 
         tooltip = |tui, stats| {
             let (iface_opt, _) = find_client_interface(stats, self.client_ip.unwrap());
             if let Some(iface) = iface_opt {
-                tui.colored_label(series_color("rx_mbps"), format!("RX: {:.2} Mbps", iface.rx_kbytes_s.parse::<f32>().unwrap_or(0.0) * 8.0 / 1000.0));
-                tui.colored_label(series_color("tx_mbps"), format!("TX: {:.2} Mbps", iface.tx_kbytes_s.parse::<f32>().unwrap_or(0.0) * 8.0 / 1000.0));
+                tui.colored_label(series_color("rx_mbps"), format!(
+                    "RX: {} Mbps",
+                    iface.rx_kbytes_s.map_or("N/A".to_string(), |v| format!("{:.2}", v as f32 * 8.0 / 1000.0))
+                ));
+                tui.colored_label(series_color("tx_mbps"), format!(
+                    "TX: {} Mbps",
+                    iface.tx_kbytes_s.map_or("N/A".to_string(), |v| format!("{:.2}", v as f32 * 8.0 / 1000.0))
+                ));
             }
         }
     );
@@ -1073,12 +1101,14 @@ impl StatisticsTab {
 
         series = {
             "link_quality" => |iface: &Interface, _| {
-                let s = &iface.link_quality;  // format: "58/70"
-                if let Some((num, den)) = s.split_once('/') {
-                    let a = num.parse::<f32>().unwrap_or(0.0);
-                    let b = den.parse::<f32>().unwrap_or(1.0);
-                    100.0 * a / b
-                } else { 0.0 }
+                iface.link_quality.as_deref()
+                    .and_then(|s| s.split_once('/'))
+                    .and_then(|(num, den)| {
+                        let a = num.parse::<f32>().ok()?;
+                        let b = den.parse::<f32>().ok()?;
+                        Some(100.0 * a / b)
+                    })
+                    .unwrap_or(f32::NAN) // skip plotting if parsing fails
             }
         },
 
@@ -1086,16 +1116,34 @@ impl StatisticsTab {
             let (iface_opt, _) = find_client_interface(stats, self.client_ip.unwrap());
             if let Some(iface) = iface_opt {
                 let link_quality_percent = iface.link_quality
-                    .split_once('/')
-                    .and_then(|(a, b)| {
-                        let num = a.parse::<f32>().ok()?;
-                        let den = b.parse::<f32>().ok()?;
-                        Some(100.0 * num / den)
-                    })
-                    .unwrap_or(0.0);
-                tui.colored_label(series_color("link_quality"), format!("Link Quality: {} ({}%)", iface.link_quality, link_quality_percent));
-                tui.label(format!("Utilization: {}", iface.if_util));
-                tui.label(format!("Signal: {} dBm, Noise: {} dBm", iface.signal_dbm, iface.noise_dbm));
+                    .as_deref()
+                    .and_then(|s| s.split_once('/'))
+                    .and_then(|(num, den)| {
+                        let a = num.parse::<f32>().ok()?;
+                        let b = den.parse::<f32>().ok()?;
+                        Some(100.0 * a / b)
+                    });
+
+                let link_quality_display = iface.link_quality.as_deref().unwrap_or("N/A");
+
+                tui.colored_label(
+                    series_color("link_quality"),
+                    format!(
+                        "Link Quality: {} ({})",
+                        link_quality_display,
+                        link_quality_percent.map_or("N/A".to_string(), |v| format!("{:.1}%", v))
+                    )
+                );
+
+                tui.label(format!(
+                    "Utilization: {}",
+                    iface.if_util.map_or("N/A".to_string(), |v| format!("{:.1}", v as f32))
+                ));
+                tui.label(format!(
+                    "Signal: {} dBm, Noise: {} dBm",
+                    iface.signal_dbm.map_or("N/A".to_string(), |v| v.to_string()),
+                    iface.noise_dbm.map_or("N/A".to_string(), |v| v.to_string())
+                ));
             }
         }
     );

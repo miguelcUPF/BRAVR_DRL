@@ -81,12 +81,12 @@ fn compute_fairness_metrics_from_history(
 
     // First, compute each VR client's airtime fraction
     for c in &iface.clients {
-        if !c.is_vr.parse::<bool>().unwrap_or(false) {
+        if !c.is_vr.unwrap_or(false) {
             continue;
         }
-        let tx_us = c.tx.duration.parse::<u64>().unwrap_or(0);
-        let rx_us = c.rx.duration.parse::<u64>().unwrap_or(0);
-        let now_ms = c.current_time_ms.parse::<u64>().unwrap_or(0);
+        let tx_us = c.tx.duration.unwrap_or(0);
+        let rx_us = c.rx.duration.unwrap_or(0);
+        let now_ms = c.current_time_ms.unwrap_or(0);
 
         let airtime = compute_airtime_fraction_from_history(&c.ip, tx_us, rx_us, now_ms, history)
             .unwrap_or(0.0);
@@ -266,8 +266,8 @@ impl BitrateManager {
             let (iface_opt, client_opt) = find_client_interface(ap_stats, self.client_ip);
 
             if let Some(client) = client_opt {
-                if let Ok(mcs) = client.tx.mcs.parse::<f32>() {
-                    mcs_sum += mcs;
+                if let Some(mcs) = client.tx.mcs {
+                    mcs_sum += mcs as f32;
                     mcs_count += 1.0;
                 }
             }
@@ -275,8 +275,8 @@ impl BitrateManager {
             // 2. Calculate Channel busy fraction (using cumulative counters from the latest stats entry)
             if i == last_idx {
                 if let Some(iface) = iface_opt {
-                    let busy = iface.ch_busy_time_ms.parse::<f32>().unwrap_or(0.0);
-                    let active = iface.ch_active_time_ms.parse::<f32>().unwrap_or(1.0);
+                    let busy = iface.ch_busy_time_ms.unwrap_or(0) as f32;
+                    let active = iface.ch_active_time_ms.unwrap_or(1) as f32;
 
                     // Compare current counters to previous stored counters
                     let prev_busy = self.prev_busy_time_ms.unwrap_or(busy);
@@ -303,7 +303,7 @@ impl BitrateManager {
             0.0
         };
         let max_mcs = 11.0;
-        let mcs_norm = (mcs_avg / max_mcs).clamp(0.0, 1.0);
+        let mcs_norm = (mcs_avg as f32 / max_mcs as f32).clamp(0.0, 1.0);
 
         self.last_state_ap_stats = (mcs_norm, ch_busy_frac);
 
