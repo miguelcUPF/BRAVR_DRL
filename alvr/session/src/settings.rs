@@ -416,7 +416,7 @@ pub struct SARSAConfig {
 
     #[schema(strings(
         display_name = "Learning Rate (α)",
-        help = "How quickly the agent updates its value estimates. Too high → instability; too low → slow learning."
+        help = "How quickly the agent updates its value estimates. Too high -> instability; too low -> slow learning."
     ))]
     #[schema(flag = "steamvr-restart")]
     #[schema(gui(slider(min = 1e-5, max = 1e-2, logarithmic)))]
