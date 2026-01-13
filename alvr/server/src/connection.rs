@@ -1522,6 +1522,7 @@ fn connection_pipeline(
 
     {
         BITRATE_MANAGER.lock().save_sarsa_model();
+        BITRATE_MANAGER.lock().disable_sarsa_learning();
     }
 
     Ok(())

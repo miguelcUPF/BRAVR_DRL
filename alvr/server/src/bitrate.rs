@@ -147,6 +147,7 @@ pub struct BitrateManager {
     frame_interarrival_s_average: SlidingWindowAverage<f32>,
 
     sarsa_agent: Option<SarsaAgent>,
+    sarsa_learning_enabled: bool,
     prev_raw_vals: Option<(f32, f32, f32)>,
     prev_action: Option<f32>,
     current_action: Option<f32>,
@@ -231,6 +232,7 @@ impl BitrateManager {
             ),
 
             sarsa_agent: None,
+            sarsa_learning_enabled: false,
             prev_raw_vals: None,
             prev_action: None,
             current_action: None,
@@ -712,6 +714,7 @@ impl BitrateManager {
                         load_model: agent_config.load_model,
                         save_model: agent_config.save_model,
                     }));
+                    self.enable_sarsa_learning();
                 }
                 _ => {
                     self.update_interval_s = UPDATE_INTERVAL;
@@ -950,80 +953,86 @@ impl BitrateManager {
                 bitrate_bps
             }
             BitrateMode::Sarsa { .. } => {
-                // 1. Compute reward from last interval
-                let (r_prev, r_components) = self.compute_reward(); // reward associated with previous (s_{t-1}, a_{t-1})
+                if self.sarsa_learning_enabled {
+                    // 1. Compute reward from last interval
+                    let (r_prev, r_components) = self.compute_reward(); // reward associated with previous (s_{t-1}, a_{t-1})
 
-                // 2. Build current state (normalized feature vector)
-                let s_t = self.build_state_vector();
+                    // 2. Build current state (normalized feature vector)
+                    let s_t = self.build_state_vector();
 
-                // Clear buffer so we don't re-process old stats
-                self.ap_stats_buffer.clear();
+                    // Clear buffer so we don't re-process old stats
+                    self.ap_stats_buffer.clear();
 
-                // 3. Select next action (ε-greedy)
-                let agent = self
-                    .sarsa_agent
-                    .as_mut()
-                    .expect("SARSA agent not initialized");
-                let (a_t_value, a_t_idx, matches_argmax) = agent.select_action(&s_t);
+                    // 3. Select next action (ε-greedy)
+                    let agent = self
+                        .sarsa_agent
+                        .as_mut()
+                        .expect("SARSA agent not initialized");
+                    let (a_t_value, a_t_idx, matches_argmax) = agent.select_action(&s_t);
 
-                // 4. If we have a stored previous transition, perform SARSA update:
-                //    update_transition(s_{t-1}, a_{t-1}, r_{t-1}, s_t, a_t)
-                let mut current_loss = 0.0;
-                let mut current_q_pred = 0.0;
-                if let Some(a_prev_idx) = agent.a_prev_idx {
-                    if let Some(s_prev_tensor) = agent.s_prev.as_ref().map(|t| t.shallow_clone()) {
-                        let (loss, q_val) =
-                            agent.update(&s_prev_tensor, a_prev_idx, r_prev, &s_t, a_t_idx);
-                        current_loss = loss;
-                        current_q_pred = q_val;
+                    // 4. If we have a stored previous transition, perform SARSA update:
+                    //    update_transition(s_{t-1}, a_{t-1}, r_{t-1}, s_t, a_t)
+                    let mut current_loss = 0.0;
+                    let mut current_q_pred = 0.0;
+                    if let Some(a_prev_idx) = agent.a_prev_idx {
+                        if let Some(s_prev_tensor) =
+                            agent.s_prev.as_ref().map(|t| t.shallow_clone())
+                        {
+                            let (loss, q_val) =
+                                agent.update(&s_prev_tensor, a_prev_idx, r_prev, &s_t, a_t_idx);
+                            current_loss = loss;
+                            current_q_pred = q_val;
+                        }
+                    } else {
+                        // No previous transition available (first step), skipping update this round and only store the current transition below.
                     }
+
+                    // 5. Compute new bitrate
+                    let bitrate_bps = ((1.0 + a_t_value) * self.last_target_bitrate_bps).clamp(
+                        agent.cfg.min_bitrate_mbps as f32 * 1e6,
+                        agent.cfg.max_bitrate_mbps as f32 * 1e6,
+                    );
+
+                    // previous state
+                    let s_prev_vec: Option<Vec<f32>> = agent.s_prev.as_ref().map(|prev| {
+                        Vec::try_from(prev.view([-1]).shallow_clone())
+                            .expect("s_prev tensor must be 1D f32")
+                    });
+                    let s_prev_str = match &s_prev_vec {
+                        Some(v) => format!("{:?}", v),
+                        None => "[]".to_string(),
+                    };
+
+                    let s_t_vec: Vec<f32> = Vec::try_from(s_t.view([-1]).shallow_clone())
+                        .expect("s_t tensor must be 1D f32");
+                    let s_t_str = format!("{:?}", s_t_vec);
+
+                    let sarsa_stats = SARSAStats {
+                        s_prev: s_prev_str,                 // previous state
+                        a_prev_idx: agent.a_prev_idx,       // previous action index
+                        r_prev,                             // previous reward
+                        s_t: s_t_str,                       // current state
+                        a_t_idx,                            // current action index
+                        a_t_value,                          // current action value
+                        matches_argmax: matches_argmax,     // whether current action matches argmax
+                        r_components,                       // reward components
+                        loss: current_loss,                 // current loss
+                        q_val_pred: current_q_pred,         // current Q value
+                        requested_bitrate_bps: bitrate_bps, // requested bitrate
+                    };
+                    alvr_events::send_event(EventType::SARSAStats(sarsa_stats));
+
+                    // 6. Store current state and action inside the agent for the next update
+                    agent.s_prev = Some(s_t.shallow_clone());
+                    agent.a_prev_idx = Some(a_t_idx);
+
+                    self.prev_action = self.current_action;
+                    self.current_action = Some(a_t_value);
+
+                    bitrate_bps
                 } else {
-                    // No previous transition available (first step), skipping update this round and only store the current transition below.
+                    self.last_target_bitrate_bps
                 }
-
-                // 5. Compute new bitrate
-                let bitrate_bps = ((1.0 + a_t_value) * self.last_target_bitrate_bps).clamp(
-                    agent.cfg.min_bitrate_mbps as f32 * 1e6,
-                    agent.cfg.max_bitrate_mbps as f32 * 1e6,
-                );
-
-                // previous state
-                let s_prev_vec: Option<Vec<f32>> = agent.s_prev.as_ref().map(|prev| {
-                    Vec::try_from(prev.view([-1]).shallow_clone())
-                        .expect("s_prev tensor must be 1D f32")
-                });
-                let s_prev_str = match &s_prev_vec {
-                    Some(v) => format!("{:?}", v),
-                    None => "[]".to_string(),
-                };
-
-                let s_t_vec: Vec<f32> = Vec::try_from(s_t.view([-1]).shallow_clone())
-                    .expect("s_t tensor must be 1D f32");
-                let s_t_str = format!("{:?}", s_t_vec);
-
-                let sarsa_stats = SARSAStats {
-                    s_prev: s_prev_str,                 // previous state
-                    a_prev_idx: agent.a_prev_idx,       // previous action index
-                    r_prev,                             // previous reward
-                    s_t: s_t_str,                       // current state
-                    a_t_idx,                            // current action index
-                    a_t_value,                          // current action value
-                    matches_argmax: matches_argmax,     // whether current action matches argmax
-                    r_components,                       // reward components
-                    loss: current_loss,                 // current loss
-                    q_val_pred: current_q_pred,         // current Q value
-                    requested_bitrate_bps: bitrate_bps, // requested bitrate
-                };
-                alvr_events::send_event(EventType::SARSAStats(sarsa_stats));
-
-                // 6. Store current state and action inside the agent for the next update
-                agent.s_prev = Some(s_t.shallow_clone());
-                agent.a_prev_idx = Some(a_t_idx);
-
-                self.prev_action = self.current_action;
-                self.current_action = Some(a_t_value);
-
-                bitrate_bps
             }
         };
 
@@ -1052,6 +1061,16 @@ impl BitrateManager {
             info!("SARSA: Saving model on disconnect...");
             agent.save_to_disk();
         }
+    }
+
+    pub fn disable_sarsa_learning(&mut self) {
+        self.sarsa_learning_enabled = false;
+        info!("SARSA learning disabled for client {}", self.client_ip);
+    }
+
+    pub fn enable_sarsa_learning(&mut self) {
+        self.sarsa_learning_enabled = true;
+        info!("SARSA learning re-enabled for client {}", self.client_ip);
     }
 }
 
