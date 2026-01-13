@@ -204,9 +204,9 @@ pub struct Interface {
     #[serde(default, deserialize_with = "de_opt_f32_any")]
     pub if_util: Option<f32>,
 
-    #[serde(deserialize_with = "de_opt_u64_any")]
+    #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub ch_active_time_ms: Option<u64>,
-    #[serde(deserialize_with = "de_opt_u64_any")]
+    #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub ch_busy_time_ms: Option<u64>,
     #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub ch_rx_time_ms: Option<u64>,
@@ -227,7 +227,7 @@ pub struct Client {
     #[serde(default)]
     pub hostname: Option<String>,
 
-    #[serde(deserialize_with = "de_opt_i16_any")]
+    #[serde(default, deserialize_with = "de_opt_i16_any")]
     pub signal_dbm: Option<i16>,
 
     #[serde(default, deserialize_with = "de_opt_i16_any")]
@@ -236,13 +236,13 @@ pub struct Client {
     #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub snr_db: Option<u64>,
 
-    #[serde(deserialize_with = "de_opt_bool_any")]
+    #[serde(default, deserialize_with = "de_opt_bool_any")]
     pub is_vr: Option<bool>,
 
     #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub last_comm_ms: Option<u64>,
 
-    #[serde(deserialize_with = "de_opt_u64_any")]
+    #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub current_time_ms: Option<u64>,
 
     #[serde(default)]
@@ -273,9 +273,9 @@ pub struct RxStats {
     pub ss: Option<u64>,
     #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub packets: Option<u64>,
-    #[serde(deserialize_with = "de_opt_u64_any")]
+    #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub bytes: Option<u64>,
-    #[serde(deserialize_with = "de_opt_u64_any")]
+    #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub duration: Option<u64>,
 }
 
@@ -283,7 +283,7 @@ pub struct RxStats {
 pub struct TxStats {
     #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub bitrate_mbps: Option<u64>,
-    #[serde(deserialize_with = "de_opt_u64_any")]
+    #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub mcs: Option<u64>,
     #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub bandwidth_mhz: Option<u64>,
@@ -291,12 +291,12 @@ pub struct TxStats {
     pub ss: Option<u64>,
     #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub packets: Option<u64>,
-    #[serde(deserialize_with = "de_opt_u64_any")]
+    #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub bytes: Option<u64>,
     #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub retries: Option<u64>,
     #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub failed: Option<u64>,
-    #[serde(deserialize_with = "de_opt_u64_any")]
+    #[serde(default, deserialize_with = "de_opt_u64_any")]
     pub duration: Option<u64>,
 }

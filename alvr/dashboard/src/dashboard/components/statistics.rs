@@ -736,8 +736,8 @@ impl StatisticsTab {
                     let rx   = match hist_iface.ch_rx_time_ms   { Some(v) => v, None => continue };
                     let tx   = match hist_iface.ch_tx_time_ms   { Some(v) => v, None => continue };
 
-                    if let (Some(p_busy), Some(p_rx), Some(p_tx), Some(p_active)) =
-                        (prev_busy, prev_rx, prev_tx, prev_active)
+                    if let (Some(p_busy), Some(p_active)) =
+                        (prev_busy, prev_active)
                     {
                         let delta_active = act - p_active;
                         if delta_active > 0 {
@@ -747,8 +747,10 @@ impl StatisticsTab {
                             busy_points.push(to_screen_trans * pos2(x, busy_p));
 
                             if self.bulk_ap_stats {
-                                rx_points.push(to_screen_trans * pos2(x, (rx - p_rx) as f32 * 100.0 / delta_active as f32));
-                                tx_points.push(to_screen_trans * pos2(x, (tx - p_tx) as f32 * 100.0 / delta_active as f32));
+                                if let (Some(p_rx), Some(p_tx)) = (prev_rx, prev_tx) {
+                                    rx_points.push(to_screen_trans * pos2(x, (rx - p_rx) as f32 * 100.0 / delta_active as f32));
+                                    tx_points.push(to_screen_trans * pos2(x, (tx - p_tx) as f32 * 100.0 / delta_active as f32));
+                                }
                             }
                         }
                     }
@@ -793,13 +795,9 @@ impl StatisticsTab {
                 let c = curr_iface.unwrap();
 
                 if let (Some(p_act), Some(c_act),
-                        Some(p_busy), Some(c_busy),
-                        Some(p_rx),   Some(c_rx),
-                        Some(p_tx),   Some(c_tx)) =
+                        Some(p_busy), Some(c_busy)) =
                     (p.ch_active_time_ms, c.ch_active_time_ms,
-                    p.ch_busy_time_ms,   c.ch_busy_time_ms,
-                    p.ch_rx_time_ms,     c.ch_rx_time_ms,
-                    p.ch_tx_time_ms,     c.ch_tx_time_ms)
+                    p.ch_busy_time_ms,   c.ch_busy_time_ms)
                 {
                     let delta_active = c_act - p_act;
                     if delta_active <= 0 { return; }
@@ -808,10 +806,17 @@ impl StatisticsTab {
                     tui.colored_label(Color32::RED, format!("Busy (channel): {:.1}%", busy_p));
 
                     if self.bulk_ap_stats {
-                        let rx_p = ((c_rx - p_rx) as f32 * 100.0 / delta_active as f32).clamp(0.0, 100.0);
-                        let tx_p = ((c_tx - p_tx) as f32 * 100.0 / delta_active as f32).clamp(0.0, 100.0);
-                        tui.colored_label(Color32::GREEN, format!("RX: {:.1}%", rx_p));
-                        tui.colored_label(Color32::BLUE, format!("TX: {:.1}%", tx_p));
+                        if let (Some(p_rx), Some(c_rx)) = (p.ch_rx_time_ms, c.ch_rx_time_ms) {
+                            let rx_p = ((c_rx - p_rx) as f32 * 100.0 / delta_active as f32)
+                                .clamp(0.0, 100.0);
+                            tui.colored_label(Color32::GREEN, format!("RX: {:.1}%", rx_p));
+                        }
+
+                        if let (Some(p_tx), Some(c_tx)) = (p.ch_tx_time_ms, c.ch_tx_time_ms) {
+                            let tx_p = ((c_tx - p_tx) as f32 * 100.0 / delta_active as f32)
+                                .clamp(0.0, 100.0);
+                            tui.colored_label(Color32::BLUE, format!("TX: {:.1}%", tx_p));
+                        }
                     }
                 }
             }
