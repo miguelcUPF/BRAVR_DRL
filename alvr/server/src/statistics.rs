@@ -540,14 +540,26 @@ impl StatisticsManager {
 
             alvr_events::send_event(EventType::StatisticsSummary(StatisticsSummary {
                 video_packets_total: self.video_packets_total,
-                video_packets_per_sec: (self.video_packets_partial_sum as f32 / interval_secs) as _,
+                video_packets_per_sec: if interval_secs > 0.0 {
+                    (self.video_packets_partial_sum as f32 / interval_secs) as _
+                } else {
+                    0
+                },
 
                 video_mbytes_total: (self.video_bytes_total as f32 / 1e6) as usize,
-                video_mbits_per_sec: self.video_bytes_partial_sum as f32 * 8. / 1e6 / interval_secs,
+                video_mbits_per_sec: if interval_secs > 0.0 {
+                    self.video_bytes_partial_sum as f32 * 8. / 1e6 / interval_secs
+                } else {
+                    0.0
+                },
 
-                video_throughput_mbits_per_sec: self.received_video_bytes_partial_sum as f32 * 8.
-                    / 1e6
-                    / self.frame_interarrival_partial_sum,
+                video_throughput_mbits_per_sec: if self.frame_interarrival_partial_sum > 0.0 {
+                    self.received_video_bytes_partial_sum as f32 * 8.
+                        / 1e6
+                        / self.frame_interarrival_partial_sum
+                } else {
+                    0.0
+                },
 
                 total_pipeline_latency_average_ms: self
                     .total_pipeline_latency_average

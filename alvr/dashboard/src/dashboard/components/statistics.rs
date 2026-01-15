@@ -149,6 +149,7 @@ pub struct StatisticsTab {
     last_statistics_summary: Option<StatisticsSummary>,
     client_ip: Option<IpAddr>,
     bulk_ap_stats: bool,
+    ap_stats_enabled: bool,
 }
 
 impl StatisticsTab {
@@ -169,6 +170,7 @@ impl StatisticsTab {
             last_statistics_summary: None,
             client_ip: None,
             bulk_ap_stats: false,
+            ap_stats_enabled: false,
         }
     }
 
@@ -176,8 +178,20 @@ impl StatisticsTab {
         self.client_ip = Some(client_ip);
     }
 
+    pub fn enable_ap_stats(&mut self) {
+        self.ap_stats_enabled = true;
+    }
+
+    pub fn disable_ap_stats(&mut self) {
+        self.ap_stats_enabled = false;
+    }
+
     pub fn enable_bulk_ap_stats(&mut self) {
         self.bulk_ap_stats = true;
+    }
+
+    pub fn disable_bulk_ap_stats(&mut self) {
+        self.bulk_ap_stats = false;
     }
 
     pub fn update_statistics(&mut self, statistics: StatisticsSummary) {
@@ -240,21 +254,25 @@ impl StatisticsTab {
                 self.draw_frameloss(ui, available_width);
                 self.draw_frame_span_interarrival(ui, available_width);
                 ui.separator();
-                self.draw_sarsa_loss(ui, available_width);
-                self.draw_sarsa_q_values(ui, available_width);
                 self.draw_sarsa_rewards(ui, available_width);
                 self.draw_sarsa_reward_components(ui, available_width);
+                self.draw_sarsa_td_error(ui, available_width);
+                self.draw_sarsa_entropy(ui, available_width);
+                self.draw_sarsa_q_values(ui, available_width);
+                self.draw_sarsa_action_probs(ui, available_width);
                 ui.separator();
-                self.draw_ap_clients_tx_mcs_graph(ui, available_width);
-                if self.bulk_ap_stats {
-                    self.draw_ap_clients_rx_mcs_graph(ui, available_width);
+                if self.ap_stats_enabled {
+                    self.draw_ap_clients_tx_mcs_graph(ui, available_width);
+                    if self.bulk_ap_stats {
+                        self.draw_ap_clients_rx_mcs_graph(ui, available_width);
+                    }
+                    self.draw_ap_clients_airtime_graph(ui, available_width);
+                    self.draw_ap_interface_channel_activity_graph(ui, available_width);
+                    self.draw_ap_clients_count_graph(ui, available_width);
+                    self.draw_bulk_ap_graphs(ui, available_width);
+                    self.draw_ap_info_message(ui);
+                    ui.separator();
                 }
-                self.draw_ap_clients_airtime_graph(ui, available_width);
-                self.draw_ap_interface_channel_activity_graph(ui, available_width);
-                self.draw_ap_clients_count_graph(ui, available_width);
-                self.draw_bulk_ap_graphs(ui, available_width);
-                self.draw_ap_info_message(ui);
-                ui.separator();
                 self.draw_statistics_overview(ui, stats);
             });
         } else {
@@ -436,7 +454,7 @@ impl StatisticsTab {
         }
     }
 
-    fn draw_sarsa_loss(&self, ui: &mut Ui, available_width: f32) {
+    fn draw_sarsa_td_error(&self, ui: &mut Ui, available_width: f32) {
         if self.history_sarsa.is_empty() {
             return;
         }
@@ -444,29 +462,73 @@ impl StatisticsTab {
         let mut data = statistics::Data::new(
             self.history_sarsa
                 .iter()
-                .map(|s| s.loss as f64)
+                .map(|s| s.td_error.abs() as f64)
                 .collect::<Vec<_>>(),
         );
 
+        let lower = 0.0;
         let upper = data.quantile(0.95) as f32;
 
         self.draw_sarsa_graph(
             ui,
             available_width,
-            "SARSA Loss",
-            -0.05..=upper,
+            "SARSA |TD Error|",
+            lower..=upper,
             |painter, to_screen_trans| {
-                let mut loss_points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
+                let mut points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
 
                 for i in 0..GRAPH_HISTORY_SIZE_SARSA {
-                    let s = &self.history_sarsa[i];
-                    loss_points.push(to_screen_trans * pos2(i as f32, s.loss));
+                    let stats = &self.history_sarsa[i];
+                    points.push(to_screen_trans * pos2(i as f32, stats.td_error.abs()));
                 }
 
-                draw_lines(painter, loss_points, Color32::RED);
+                draw_lines(painter, points, Color32::RED);
             },
             |ui, stats| {
-                ui.colored_label(Color32::RED, format!("Loss: {:.5}", stats.loss));
+                ui.colored_label(
+                    Color32::RED,
+                    format!("|TD error|: {:.4}", stats.td_error.abs()),
+                );
+                ui.label(format!("Raw TD error: {:.4}", stats.td_error));
+            },
+        );
+    }
+
+    fn draw_sarsa_entropy(&self, ui: &mut Ui, available_width: f32) {
+        if self.history_sarsa.is_empty() {
+            return;
+        }
+
+        let mut data = statistics::Data::new(
+            self.history_sarsa
+                .iter()
+                .map(|s| s.policy_entropy as f64)
+                .collect::<Vec<_>>(),
+        );
+
+        let lower = 0.0;
+        let upper = data.quantile(1.0) as f32;
+
+        self.draw_sarsa_graph(
+            ui,
+            available_width,
+            "SARSA Policy Entropy",
+            lower..=upper,
+            |painter, to_screen_trans| {
+                let mut points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
+
+                for i in 0..GRAPH_HISTORY_SIZE_SARSA {
+                    let stats = &self.history_sarsa[i];
+                    points.push(to_screen_trans * pos2(i as f32, stats.policy_entropy));
+                }
+
+                draw_lines(painter, points, Color32::LIGHT_BLUE);
+            },
+            |ui, stats| {
+                ui.colored_label(
+                    Color32::LIGHT_BLUE,
+                    format!("Entropy: {:.3}", stats.policy_entropy),
+                );
             },
         );
     }
@@ -476,33 +538,97 @@ impl StatisticsTab {
             return;
         }
 
-        let mut data = statistics::Data::new(
-            self.history_sarsa
-                .iter()
-                .map(|s| s.q_val_pred as f64)
-                .collect::<Vec<_>>(),
-        );
+        let mut all_qs = Vec::new();
+        for s in &self.history_sarsa {
+            for q in &s.q_values {
+                all_qs.push(*q as f64);
+            }
+        }
 
-        let upper = data.quantile(0.95) as f32;
+        let mut data = statistics::Data::new(all_qs);
         let lower = data.quantile(0.05) as f32;
+        let upper = data.quantile(0.95) as f32;
+
+        let num_actions = self.history_sarsa[0].q_values.len();
 
         self.draw_sarsa_graph(
             ui,
             available_width,
-            "SARSA Q-Values",
+            "SARSA Q-values",
             lower..=upper,
             |painter, to_screen_trans| {
-                let mut q_points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
+                for a in 0..num_actions {
+                    let mut points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
 
-                for i in 0..GRAPH_HISTORY_SIZE_SARSA {
-                    let s = &self.history_sarsa[i];
-                    q_points.push(to_screen_trans * pos2(i as f32, s.q_val_pred));
+                    for i in 0..GRAPH_HISTORY_SIZE_SARSA {
+                        let stats = &self.history_sarsa[i];
+                        points.push(to_screen_trans * pos2(i as f32, stats.q_values[a]));
+                    }
+
+                    let color = Color32::from_rgb(
+                        (200 + a as u8 * 30) % 255,
+                        (100 + a as u8 * 60) % 255,
+                        (50 + a as u8 * 90) % 255,
+                    );
+
+                    draw_lines(painter, points, color);
                 }
-
-                draw_lines(painter, q_points, Color32::BLUE);
             },
             |ui, stats| {
-                ui.colored_label(Color32::BLUE, format!("Q-Pred: {:.2}", stats.q_val_pred));
+                ui.label("Q-values:");
+                for (i, q) in stats.q_values.iter().enumerate() {
+                    let color = Color32::from_rgb(
+                        (200 + i as u8 * 30) % 255,
+                        (100 + i as u8 * 60) % 255,
+                        (50 + i as u8 * 90) % 255,
+                    );
+                    ui.colored_label(color, format!("Q[a{}]: {:.3}", i, q));
+                }
+            },
+        );
+    }
+
+    fn draw_sarsa_action_probs(&self, ui: &mut Ui, available_width: f32) {
+        if self.history_sarsa.is_empty() {
+            return;
+        }
+
+        let num_actions = self.history_sarsa[0].action_probs.len();
+
+        self.draw_sarsa_graph(
+            ui,
+            available_width,
+            "SARSA Action Probabilities",
+            0.0..=1.0,
+            |painter, to_screen_trans| {
+                for a in 0..num_actions {
+                    let mut points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
+
+                    for i in 0..GRAPH_HISTORY_SIZE_SARSA {
+                        let stats = &self.history_sarsa[i];
+                        let p = stats.action_probs[a];
+                        points.push(to_screen_trans * pos2(i as f32, p));
+                    }
+
+                    let color = Color32::from_rgb(
+                        (200 + a as u8 * 30) % 255,
+                        (100 + a as u8 * 60) % 255,
+                        (50 + a as u8 * 90) % 255,
+                    );
+
+                    draw_lines(painter, points, color);
+                }
+            },
+            |ui, stats| {
+                ui.label("Action probabilities:");
+                for (i, p) in stats.action_probs.iter().enumerate() {
+                    let color = Color32::from_rgb(
+                        (200 + i as u8 * 30) % 255,
+                        (100 + i as u8 * 60) % 255,
+                        (50 + i as u8 * 90) % 255,
+                    );
+                    ui.colored_label(color, format!("a{}: {:.3}", i, p));
+                }
             },
         );
     }
@@ -520,12 +646,13 @@ impl StatisticsTab {
         );
 
         let lower = data.quantile(0.05) as f32;
+        let upper = data.quantile(1.0) as f32;
 
         self.draw_sarsa_graph(
             ui,
             available_width,
             "SARSA Rewards",
-            lower..=1.05,
+            lower..=upper,
             |painter, to_screen_trans| {
                 let mut reward_points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
 
@@ -581,6 +708,7 @@ impl StatisticsTab {
 
         let mut data = statistics::Data::new(all_values);
         let lower = data.quantile(0.0) as f32;
+        let upper = data.quantile(1.0) as f32;
 
         let hist = &self.history_sarsa;
         let colors_paint = colors.clone();
@@ -591,7 +719,7 @@ impl StatisticsTab {
             ui,
             available_width,
             "SARSA Reward Components",
-            lower..=1.05,
+            lower..=upper,
             move |painter, to_screen_trans| {
                 let hist_len = hist.len();
                 if hist_len < 2 {

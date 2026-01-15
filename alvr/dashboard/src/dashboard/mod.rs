@@ -191,11 +191,15 @@ impl eframe::App for Dashboard {
                     let http_server = settings.video.bitrate.http_server;
                     match http_server {
                         Switch::Enabled(server) => {
+                            self.statistics_tab.enable_ap_stats();
                             if server.are_bulk_stats {
                                 self.statistics_tab.enable_bulk_ap_stats();
+                            } else {
+                                self.statistics_tab.disable_bulk_ap_stats();
                             }
                         }
                         Switch::Disabled => {
+                            self.statistics_tab.disable_ap_stats();
                             if let BitrateMode::Sarsa { .. } = &settings.video.bitrate.mode {
                                 warn!("HTTP server is disabled but SARSA is enabled. Some features may not work.");
                             }

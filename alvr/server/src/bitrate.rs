@@ -968,20 +968,24 @@ impl BitrateManager {
                         .sarsa_agent
                         .as_mut()
                         .expect("SARSA agent not initialized");
-                    let (a_t_value, a_t_idx, matches_argmax) = agent.select_action(&s_t);
+                    let (
+                        a_t_value,
+                        a_t_idx,
+                        matches_argmax,
+                        q_values,
+                        action_probs,
+                        policy_entropy,
+                    ) = agent.select_action(&s_t);
 
                     // 4. If we have a stored previous transition, perform SARSA update:
                     //    update_transition(s_{t-1}, a_{t-1}, r_{t-1}, s_t, a_t)
-                    let mut current_loss = 0.0;
-                    let mut current_q_pred = 0.0;
+                    let mut td_error = 0.0;
                     if let Some(a_prev_idx) = agent.a_prev_idx {
                         if let Some(s_prev_tensor) =
                             agent.s_prev.as_ref().map(|t| t.shallow_clone())
                         {
-                            let (loss, q_val) =
+                            td_error =
                                 agent.update(&s_prev_tensor, a_prev_idx, r_prev, &s_t, a_t_idx);
-                            current_loss = loss;
-                            current_q_pred = q_val;
                         }
                     } else {
                         // No previous transition available (first step), skipping update this round and only store the current transition below.
@@ -1008,18 +1012,21 @@ impl BitrateManager {
                     let s_t_str = format!("{:?}", s_t_vec);
 
                     let sarsa_stats = SARSAStats {
-                        s_prev: s_prev_str,                 // previous state
-                        a_prev_idx: agent.a_prev_idx,       // previous action index
-                        r_prev,                             // previous reward
-                        s_t: s_t_str,                       // current state
-                        a_t_idx,                            // current action index
-                        a_t_value,                          // current action value
-                        matches_argmax: matches_argmax,     // whether current action matches argmax
-                        r_components,                       // reward components
-                        loss: current_loss,                 // current loss
-                        q_val_pred: current_q_pred,         // current Q value
+                        s_prev: s_prev_str,           // previous state
+                        a_prev_idx: agent.a_prev_idx, // previous action index
+                        r_prev,                       // previous reward
+                        s_t: s_t_str,                 // current state
+                        a_t_idx,                      // current action index
+                        a_t_value,                    // current action value
+                        matches_argmax,               // whether current action matches argmax
+                        r_components,                 // reward components
+                        q_values,                     // q values
+                        action_probs,                 // action probabilities
+                        policy_entropy,               // policy entropy
+                        td_error,
                         requested_bitrate_bps: bitrate_bps, // requested bitrate
                     };
+
                     alvr_events::send_event(EventType::SARSAStats(sarsa_stats));
 
                     // 6. Store current state and action inside the agent for the next update

@@ -138,8 +138,10 @@ pub struct SARSAStats {
 
     pub r_components: Vec<f32>, // Reward components
 
-    pub loss: f32,       // Loss (L_t)
-    pub q_val_pred: f32, // Predicted Q value (Q_t)
+    pub q_values: Vec<f32>, // Q values (Q_{t+1})
+    pub action_probs: Vec<f32>, // Action probabilities (pi_{t+1})
+    pub policy_entropy: f32, // Policy entropy (H_{t+1})
+    pub td_error: f32,   // Temporal difference error (TD_{t+1})
 
     pub requested_bitrate_bps: f32, // Requested bitrate at this step
 }

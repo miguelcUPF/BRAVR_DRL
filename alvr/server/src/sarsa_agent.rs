@@ -134,26 +134,39 @@ impl SarsaAgent {
     }
 
     // Boltzmann (softmax) action selection. Returns (action_value, action_idx, matches_argmax)
-    pub fn select_action(&self, s_t: &Tensor) -> (f32, i64, bool) {
+    pub fn select_action(&self, s_t: &Tensor) -> (f32, i64, bool, Vec<f32>, Vec<f32>, f32) {
         // ensure the state tensor is on the agent device
         let s = s_t.to_device(self.device);
         let q_values = self.net.forward(&s); // shape [1, n_actions]
+        let q_vec: Vec<f32> = Vec::try_from(q_values.view([-1])).unwrap();
 
         // avoid degenerate temperature
         let temp = self.cfg.temperature.max(1e-6);
         let scaled = &q_values / temp;
         let probs = scaled.softmax(-1, Kind::Float);
+        let probs_vec: Vec<f32> = Vec::try_from(probs.view([-1])).unwrap();
 
         // sample
-        let probs_vec: Vec<f32> = Vec::try_from(probs.view([-1])).expect("probs->vec");
-        let dist = WeightedIndex::new(&probs_vec).expect("Invalid softmax probs");
+        let dist = WeightedIndex::new(&probs_vec).unwrap();
         let mut rng = thread_rng();
         let idx = dist.sample(&mut rng) as i64;
 
         let argmax_idx = q_values.argmax(1, false).int64_value(&[0]);
         let matches_argmax = idx == argmax_idx;
 
-        (self.cfg.action_values[idx as usize], idx, matches_argmax)
+        let entropy = -probs_vec
+            .iter()
+            .map(|p| if *p > 0.0 { p * p.ln() } else { 0.0 })
+            .sum::<f32>();
+
+        (
+            self.cfg.action_values[idx as usize],
+            idx,
+            matches_argmax,
+            q_vec,
+            probs_vec,
+            entropy,
+        )
     }
 
     // Perform DEEP SARSA update step
@@ -164,7 +177,7 @@ impl SarsaAgent {
         r_t: f32,
         s_next: &Tensor,
         a_next_idx: i64,
-    ) -> (f32, f32) {
+    ) -> f32 {
         // Returns (Loss, Q_Predicted)
         let s = s_t.view([1, -1]).to_device(self.device);
         let s_n = s_next.view([1, -1]).to_device(self.device);
@@ -194,8 +207,8 @@ impl SarsaAgent {
         // Smooth L1 (Huber) loss for stability
         let loss = q_pred.smooth_l1_loss(&target, tch::Reduction::Mean, 1.0);
 
-        let q_val_scalar = f32::try_from(q_pred).unwrap_or(0.0);
-        let loss_scalar = f32::try_from(&loss).unwrap_or(0.0);
+        // let q_val_scalar = f32::try_from(q_pred).unwrap_or(0.0);
+        // let loss_scalar = f32::try_from(&loss).unwrap_or(0.0);
 
         // gradient descent step
         // self.opt.backward_step(&loss);
@@ -207,7 +220,9 @@ impl SarsaAgent {
         // soft-update target (polyak averaging)
         self.soft_update_target();
 
-        (loss_scalar, q_val_scalar)
+        let td_error = f32::try_from(&(&target - &q_pred).abs()).unwrap_or(0.0);
+
+        td_error
     }
 
     // Manual implementation of Gradient Clipping (L2 Norm)
