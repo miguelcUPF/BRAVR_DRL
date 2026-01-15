@@ -253,7 +253,7 @@ impl BitrateManager {
     fn get_state_ap_stats(&mut self) -> (f32, f32) {
         // Return previous state vector or zeros if no stats received yet
         if self.ap_stats_buffer.is_empty() {
-            warn!("AP stats buffer is empty");
+            info!("AP stats buffer is empty");
             return self.last_state_ap_stats;
         }
 
