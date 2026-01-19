@@ -109,18 +109,27 @@ pub struct GraphNetworkStatistics {
 
 #[derive(Serialize, Deserialize, Clone, Debug, Copy, Default)]
 pub struct HeuristicStats {
-    pub frame_interval_s: f32,
-    pub server_fps: f32,
-    pub steps_bps: f32,
-    pub r_steps_bps: f32,
+    pub bitrate_step_count: usize,
 
-    pub network_heur_fps: f32,
-    pub rtt_avg_heur_s: f32,
-    pub random_prob: f32,
+    pub bitrate_dec_steps: usize,
+    pub bitrate_inc_steps: usize,
 
-    pub threshold_fps: f32,
-    pub threshold_rtt_s: f32,
-    pub threshold_u: f32,
+    pub bitrate_step_size_bps: f32,
+
+    pub r_rtt: f32,
+    pub r_inc: f32,
+
+    pub rtt_adj_prob: f32,
+    pub bitrate_inc_prob: f32,
+
+    pub fps_tx_avg: f32,
+    pub fps_rx_avg: f32,
+
+    pub nfr_avg: f32,
+    pub rtt_avg_ms: f32,
+
+    pub nfr_thresh: f32,
+    pub rtt_thresh_ms: f32,
 
     pub requested_bitrate_bps: f32,
 }
