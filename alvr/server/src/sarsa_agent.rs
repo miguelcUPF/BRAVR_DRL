@@ -12,11 +12,15 @@ pub struct SarsaAgentConfig {
     pub lr: f64,          // Learning rate (e.g., 3e-4)
     pub tau: f64,         // Polyak averaging factor for soft updates (e.g., 0.005)
     pub temperature: f64, // Boltzmann exploration temperature (e.g., 0.5)
+    pub epsilon: f64,     // minimum exploration probability (e.g., 0.05)
     pub n_step: usize,    // N-step return window (e.g., 4)
 
     // Neural Network Architecture
     pub state_dim: i64,
     pub hidden_dim: i64,
+
+    // Action Shielding
+    pub action_shielding_enabled: bool,
 
     // Persistence
     pub model_path: PathBuf,
@@ -136,9 +140,13 @@ impl SarsaAgent {
             ))
     }
 
-    /// Select action using Boltzmann (Softmax) exploration.
+    /// Select action using Boltzmann (Softmax) exploration with masking and epsilon floor.
     /// Returns: (selected_idx, q_values, probabilities, entropy, is_greedy)
-    pub fn select_action(&self, s_t: &Tensor) -> (i64, Vec<f32>, Vec<f32>, f32, bool) {
+    pub fn select_action(
+        &self,
+        s_t: &Tensor,
+        mask: &[bool],
+    ) -> (i64, Vec<f32>, Vec<f32>, f32, bool) {
         let s = s_t.to_device(self.device);
 
         // Use 'no_grad' because action selection is not part of backprop
@@ -150,11 +158,39 @@ impl SarsaAgent {
             // Boltzmann distribution calculation
             // P(a) = exp(Q(s,a) / T) / sum(exp(Q(s,a) / T))
             let temp = self.cfg.temperature.max(1e-6) as f32;
-            let exp: Vec<f32> = q_vec.iter().map(|q| (q / temp).exp()).collect();
+            let max_q = q_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mut exp: Vec<f32> = q_vec.iter().map(|q| ((q - max_q) / temp).exp()).collect(); // subtract max for numerical stability
+
+            // Apply mask (if an action is forbidden, set its probability weight to 0)
+            for (i, is_allowed) in mask.iter().enumerate() {
+                if !*is_allowed {
+                    exp[i] = 0.0;
+                }
+            }
+
+            // Sum probabilities
             let sum: f32 = exp.iter().sum();
 
-            // Normalize to get probabilities
-            let probs: Vec<f32> = exp.iter().map(|v| v / sum).collect();
+            // Normalize to get probabilities with safety check (if sum == 0, return uniform distribution)
+            let mut probs: Vec<f32> = if sum > 1e-9 {
+                exp.iter().map(|v| v / sum).collect()
+            } else {
+                vec![1.0 / N_ACTIONS as f32; N_ACTIONS as usize]
+            };
+
+            // Ensure minimum exploration (among allowed actions)
+            let valid_count = mask.iter().filter(|&&b| b).count().max(1) as f32;
+            let epsilon = self.cfg.epsilon as f32;
+            // P_final = (1 - eps) * P_boltzmann + eps * P_uniform
+            let mut mixed_probs: Vec<f32> = Vec::new();
+            for (i, p) in probs.iter().enumerate() {
+                if mask[i] {
+                    mixed_probs.push((1.0 - epsilon) * p + epsilon / valid_count);
+                } else {
+                    mixed_probs.push(0.0);
+                }
+            }
+            probs = mixed_probs;
 
             // Sample action from the probability distribution
             let dist = WeightedIndex::new(&probs).unwrap();

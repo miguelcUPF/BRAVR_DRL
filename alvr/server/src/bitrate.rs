@@ -330,6 +330,35 @@ impl BitrateManager {
         self.total_rx_bits / self.total_frame_interarrival_s
     }
 
+    fn get_action_mask(
+        env: &StreamingEnvironment,
+        snap: &EnvironmentSnapshot,
+        current_idx: usize,
+        max_idx: usize,
+    ) -> Vec<bool> {
+        // 0 = Decrease, 1 = Hold, 2 = Increase
+        let mut mask = vec![true, true, true];
+
+        // Rule 1: Physical boundaries (cannot go below minimum or above maximum)
+        if current_idx == 0 {
+            mask[0] = false;
+        } else if current_idx == max_idx {
+            mask[2] = false;
+        }
+
+        // Rule 2: Latency safety (if RTT is too high, don't increase bitrate)
+        if snap.rtt_ms > env.cfg.rtt_max_ms {
+            mask[2] = false;
+        }
+
+        // Rule 3: Loss panic (if NFR is too low, don't increase bitrate)
+        if 1.0 - snap.nfr > env.cfg.nfr_deficit_max {
+            mask[2] = false;
+        }
+
+        mask
+    }
+
     fn reset_sample_stats(&mut self) {
         self.rtt_samples_s.clear();
         self.frame_interval_samples_s.clear();
@@ -412,7 +441,9 @@ impl BitrateManager {
                     update_interval_s,
                     bitrate_levels_mbps,
                     nfr_target,
+                    nfr_deficit_max,
                     rtt_target_ms,
+                    rtt_max_ms,
                     rtt_state_scale_ms,
                     w_bitrate,
                     w_nfr,
@@ -430,7 +461,9 @@ impl BitrateManager {
                     let env_config = LearningConfig::new(
                         bitrate_levels_mbps.clone(),
                         *nfr_target,
+                        *nfr_deficit_max,
                         *rtt_target_ms,
+                        *rtt_max_ms,
                         *rtt_state_scale_ms,
                         *w_bitrate,
                         *w_nfr,
@@ -448,8 +481,10 @@ impl BitrateManager {
                         tau: agent_config.tau,
                         temperature: agent_config.temperature,
                         n_step: agent_config.n_step,
+                        epsilon: agent_config.epsilon,
                         state_dim,
                         hidden_dim: agent_config.hidden_dim as i64,
+                        action_shielding_enabled: agent_config.action_shielding_enabled,
                         model_path: model_path_buf,
                         load_model: agent_config.load_model,
                         save_model: agent_config.save_model,
@@ -730,8 +765,8 @@ impl BitrateManager {
                         // 4. RL Step
                         // Calculate reward and update history
                         let (reward, r_components) = env.compute_reward(&snapshot); // r_t = r(s_{t-1}, a_{t-1})
-                                                                                    // Build current state
-                        let s_t = env.build_state_vector(&snapshot);
+
+                        let s_t = env.build_state_vector(&snapshot); // Build current state
 
                         // Log previous state and action since update() overrides them
                         let vec_to_str = |t: &Option<Tensor>| -> String {
@@ -747,9 +782,19 @@ impl BitrateManager {
                         let s_prev_str = vec_to_str(&agent.s_prev);
                         let a_prev_idx = agent.a_prev_idx;
 
+                        let mut action_mask = vec![true, true, true];
+                        if agent.cfg.action_shielding_enabled {
+                            action_mask = Self::get_action_mask(
+                                &env,
+                                &snapshot,
+                                current_bitrate_idx,
+                                env.cfg.bitrate_levels_mbps.len() - 1, // max_idx
+                            );
+                        };
+
                         // Select action
                         let (a_t_idx, q_values, action_probs, policy_entropy, matches_argmax) =
-                            agent.select_action(&s_t);
+                            agent.select_action(&s_t, &action_mask);
                         // Perform SARSA update (s_{t-1}, a_{t-1}, r_{t-1}, s_t, a_t)
                         let td_error = agent.update(reward, &s_t, a_t_idx);
 

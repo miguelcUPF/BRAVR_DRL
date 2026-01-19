@@ -407,6 +407,13 @@ pub struct SARSAConfig {
     pub save_model: bool,
 
     #[schema(strings(
+        display_name = "Enable Action Shielding",
+        help = "Enforces safety constraints that strictly forbid the agent from taking specific actions (such as increasing during excessive latency) regardless of the neural network's preference through action masking."
+    ))]
+    #[schema(flag = "steamvr-restart")]
+    pub action_shielding_enabled: bool,
+
+    #[schema(strings(
         display_name = "N-Step Lookahead",
         help = "How many future steps to observe before updating the value estimate."
     ))]
@@ -445,6 +452,14 @@ pub struct SARSAConfig {
     #[schema(flag = "steamvr-restart")]
     #[schema(gui(slider(min = 0.01, max = 5.0, logarithmic)))]
     pub temperature: f64,
+
+    #[schema(strings(
+        display_name = "Min Exploration Rate (epsilon)",
+        help = "Guaranteed minimum chance of trying random actions, preventing the agent from getting stuck."
+    ))]
+    #[schema(flag = "steamvr-restart")]
+    #[schema(gui(slider(min = 0.0, max = 0.5, step = 0.01)))]
+    pub epsilon: f64,
 
     #[schema(strings(
         display_name = "Hidden Layer Size",
@@ -532,10 +547,26 @@ pub enum BitrateMode {
         #[schema(gui(slider(min = 0.1, max = 1.0, logarithmic)))]
         nfr_target: f32,
 
+        #[schema(strings(
+            display_name = "Shield: Max NFR Deficit Tolerance",
+            help = "The maximum allowable drop in NFR (1.0 - NFR) before the Shield blocks bitrate increases. e.g. 0.05 means if NFR drops below 95%, increasing is forbidden."
+        ))]
+        #[schema(flag = "steamvr-restart")]
+        #[schema(gui(slider(min = 0.0, max = 0.2, step = 0.005)))]
+        nfr_deficit_max: f32,
+
         #[schema(strings(display_name = "VF-RTT target"))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 1., max = 200.0, logarithmic)), suffix = " ms")]
         rtt_target_ms: f32,
+
+        #[schema(strings(
+            display_name = "Shield: Max RTT for Increase",
+            help = "The latency threshold above which the Shield strictly forbids increasing the bitrate. Acts as a 'hard ceiling' for safety."
+        ))]
+        #[schema(flag = "steamvr-restart")]
+        #[schema(gui(slider(min = 20.0, max = 200.0, step = 1.0)), suffix = " ms")]
+        rtt_max_ms: f32,
 
         #[schema(strings(
             display_name = "VF-RTT state saturation point",
@@ -1565,9 +1596,11 @@ pub fn session_settings_default() -> SettingsDefault {
                             content: vec![5.0, 10.0, 15.0, 20.0, 25.0, 30.0],
                         },
                         nfr_target: 0.95,
+                        nfr_deficit_max: 0.05,
                         rtt_target_ms: 22.0,
+                        rtt_max_ms: 50.0,
                         rtt_state_scale_ms: 100.0,
-                        w_bitrate: 0.5,
+                        w_bitrate: 0.8,
                         w_nfr: 0.5,
                         w_rtt: 3.0,
                         w_osc: 0.05,
@@ -1575,11 +1608,13 @@ pub fn session_settings_default() -> SettingsDefault {
                         agent_config: SARSAConfigDefault {
                             load_model: false,
                             save_model: true,
+                            action_shielding_enabled: true,
                             n_step: 3,
                             gamma: 0.9,
                             lr: 3e-4,
                             tau: 0.01,
                             temperature: 0.7,
+                            epsilon: 0.05,
                             hidden_dim: 64,
                         },
                     },

@@ -11,6 +11,10 @@ pub struct LearningConfig {
     pub nfr_target: f32,
     pub rtt_target_ms: f32,
 
+    // Action shielding
+    pub nfr_deficit_max: f32,
+    pub rtt_max_ms: f32,
+
     // Scales
     pub rtt_state_scale_ms: f32, // Divisor for tanh, e.g., 100.0 (values over 100ms map to ~1.0)
 
@@ -29,6 +33,9 @@ impl Default for LearningConfig {
             nfr_target: 0.95,
             rtt_target_ms: 22.0,
 
+            nfr_deficit_max: 0.05,
+            rtt_max_ms: 50.0,
+
             rtt_state_scale_ms: 100.0,
 
             w_bitrate: 1.0,
@@ -44,7 +51,9 @@ impl LearningConfig {
     pub fn new(
         bitrate_levels_mbps: Vec<f32>,
         nfr_target: f32,
+        nfr_deficit_max: f32,
         rtt_target_ms: f32,
+        rtt_max_ms: f32,
         rtt_state_scale_ms: f32,
         w_bitrate: f32,
         w_nfr: f32,
@@ -56,6 +65,8 @@ impl LearningConfig {
             bitrate_levels_mbps,
             nfr_target,
             rtt_target_ms,
+            nfr_deficit_max,
+            rtt_max_ms,
             rtt_state_scale_ms,
             w_bitrate,
             w_nfr,
