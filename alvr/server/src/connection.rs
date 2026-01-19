@@ -607,10 +607,14 @@ fn connection_pipeline(
             max_history_size = Some(*history_size);
         }
         BitrateMode::Sarsa {
-            initial_bitrate_mbps,
+            bitrate_levels_mbps,
             ..
         } => {
-            initial_bitrate = *initial_bitrate_mbps;
+            let min_mbps = bitrate_levels_mbps
+                .iter()
+                .copied()
+                .fold(f32::INFINITY, |min, v| min.min(v));
+            initial_bitrate = min_mbps;
         }
         _ => {}
     }

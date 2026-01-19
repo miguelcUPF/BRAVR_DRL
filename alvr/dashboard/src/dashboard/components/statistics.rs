@@ -669,7 +669,7 @@ impl StatisticsTab {
                     "Bitrate: {:.1} Mbps",
                     stats.requested_bitrate_bps / 1e6
                 ));
-                ui.label(format!("Action value: {}", stats.a_t_value));
+                ui.label(format!("Action idx: {}", stats.a_t_idx));
 
                 if stats.matches_argmax {
                     ui.label("Type: Exploit"); // sampled action equals highest Q-value

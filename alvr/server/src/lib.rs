@@ -12,6 +12,8 @@ mod statistics;
 mod tracking;
 mod web_server;
 mod sarsa_agent;
+mod learning_env;
+mod ap_telemetry;
 
 #[allow(
     non_camel_case_types,

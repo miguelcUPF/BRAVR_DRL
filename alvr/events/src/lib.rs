@@ -133,7 +133,6 @@ pub struct SARSAStats {
 
     pub s_t: String,          // Current state (s_t)
     pub a_t_idx: i64,         // Current action index (a_t)
-    pub a_t_value: f32,       // Current action value (a_t)
     pub matches_argmax: bool, // Whether the current action equals highest Q-value (exploitation) or not (exploration)
 
     pub r_components: Vec<f32>, // Reward components

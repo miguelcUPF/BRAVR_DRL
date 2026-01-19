@@ -407,6 +407,14 @@ pub struct SARSAConfig {
     pub save_model: bool,
 
     #[schema(strings(
+        display_name = "N-Step Lookahead",
+        help = "How many future steps to observe before updating the value estimate."
+    ))]
+    #[schema(flag = "steamvr-restart")]
+    #[schema(gui(slider(min = 1, max = 10)))]
+    pub n_step: usize,
+
+    #[schema(strings(
         display_name = "Discount Factor (γ)",
         help = "Weighting of future rewards relative to immediate rewards (0 = short-sighted, 1 = long-term)."
     ))]
@@ -445,13 +453,6 @@ pub struct SARSAConfig {
     #[schema(flag = "steamvr-restart")]
     #[schema(gui(slider(min = 1, max = 512, step = 1)))]
     pub hidden_dim: u64,
-
-    #[schema(strings(
-        display_name = "Bitrate Change Sizes (±%)",
-        help = "Available bitrate changes. Negative = Cut (e.g., -0.5 is -50%), Positive = Grow (e.g., 0.1 is +10%)."
-    ))]
-    #[schema(flag = "steamvr-restart")]
-    pub action_multipliers: Vec<f32>,
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
@@ -515,26 +516,16 @@ pub enum BitrateMode {
         #[schema(strings(display_name = "Profile"))]
         nest_vr_profile: NestVrProfile,
     },
-    #[schema(collapsible, strings(display_name = "SARSA"))]
+    #[schema(collapsible, strings(display_name = "n-step Expected D-SARSA"))]
     Sarsa {
         #[schema(strings(display_name = "Adjustment period (s)"))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.1, max = 1.0, logarithmic)), suffix = "s")]
         update_interval_s: f32,
 
-        #[schema(strings(display_name = "Maximum bitrate"))]
+        #[schema(strings(display_name = "Bitrate Ladder", help = "Available bitrates in Mbps."))]
         #[schema(flag = "steamvr-restart")]
-        #[schema(gui(slider(min = 1.0, max = 1000.0, logarithmic)), suffix = "Mbps")]
-        max_bitrate_mbps: f32,
-
-        #[schema(strings(display_name = "Minimum bitrate"))]
-        #[schema(flag = "steamvr-restart")]
-        #[schema(gui(slider(min = 1.0, max = 1000.0, logarithmic)), suffix = "Mbps")]
-        min_bitrate_mbps: f32,
-
-        #[schema(strings(display_name = "Initial bitrate"))]
-        #[schema(gui(slider(min = 1.0, max = 1000.0, logarithmic)), suffix = "Mbps")]
-        initial_bitrate_mbps: f32,
+        bitrate_levels_mbps: Vec<f32>,
 
         #[schema(strings(display_name = "NFR target"))]
         #[schema(flag = "steamvr-restart")]
@@ -547,13 +538,11 @@ pub enum BitrateMode {
         rtt_target_ms: f32,
 
         #[schema(strings(
-            display_name = "VF-RTT tolerance factor",
-            help = "How much RTT can exceed the target before being heavily penalized. \
-                Higher = more tolerant, lower = stricter control."
+            display_name = "VF-RTT state saturation point",
+            help = "Sets the divisor for the state's tanh normalization. Latencies above this value saturate the neural network input (approaching 1.0)."
         ))]
-        #[schema(flag = "steamvr-restart")]
-        #[schema(gui(slider(min = 1.05, max = 10.0, step = 0.05)), suffix = "×")]
-        rtt_tolerance_factor: f32,
+        #[schema(gui(slider(min = 20., max = 200.0, logarithmic)), suffix = " ms")]
+        rtt_state_scale_ms: f32,
 
         #[schema(strings(
             display_name = "Reward: bitrate weight",
@@ -565,31 +554,31 @@ pub enum BitrateMode {
 
         #[schema(strings(
             display_name = "Reward: NFR weight",
-            help = "Importance of maintaining high delivered frame ratio."
+            help = "Importance of maintaining high delivered frame ratio (frames received / frames transmitted).Controls the penalty applied per 1% drop in delivered frame ratio below the target."
         ))]
         #[schema(flag = "steamvr-restart")]
-        #[schema(gui(slider(min = 0.0, max = 5.0, logarithmic)))]
+        #[schema(gui(slider(min = 0.0, max = 20.0, logarithmic)))]
         w_nfr: f32,
 
         #[schema(strings(
             display_name = "Reward: VF-RTT weight",
-            help = "Importance of maintaining low round-trip time."
+            help = "Importance of maintaining low round-trip time. Controls the penalty applied for each additional 100 ms of RTT above the target."
         ))]
         #[schema(flag = "steamvr-restart")]
-        #[schema(gui(slider(min = 0.0, max = 5.0, logarithmic)))]
+        #[schema(gui(slider(min = 0.0, max = 20.0, logarithmic)))]
         w_rtt: f32,
 
         #[schema(strings(
-            display_name = "Reward: volatility weight",
-            help = "Importance of avoiding action direction changes (i.e., oscillations)"
+            display_name = "Reward: oscillations weight",
+            help = "Importance of avoiding action direction changes. Controls the penalty applied for each oscillation in the action direction."
         ))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.0, max = 5.0, logarithmic)))]
-        w_vol: f32,
+        w_osc: f32,
 
         #[schema(strings(
             display_name = "Reward: airtime fairness weight",
-            help = "Importance of avoiding unfair airtime usage among BSS clients."
+            help = "Importance of avoiding unfair airtime usage among BSS clients. Controls the penalty applied when a flow exceeds its equal-share airtime allocation, with the penalty growing quadratically with relative excess usage."
         ))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.0, max = 5.0, logarithmic)))]
@@ -1570,30 +1559,28 @@ pub fn session_settings_default() -> SettingsDefault {
                     Sarsa: BitrateModeSarsaDefault {
                         gui_collapsed: true,
                         update_interval_s: 0.5,
-                        max_bitrate_mbps: 100.0,
-                        min_bitrate_mbps: 10.0,
-                        initial_bitrate_mbps: 10.0,
+                        bitrate_levels_mbps: VectorDefault {
+                            gui_collapsed: true,
+                            element: 0.0,
+                            content: vec![5.0, 10.0, 15.0, 20.0, 25.0, 30.0],
+                        },
                         nfr_target: 0.95,
                         rtt_target_ms: 22.0,
-                        rtt_tolerance_factor: 2.0,
+                        rtt_state_scale_ms: 100.0,
                         w_bitrate: 1.0,
-                        w_nfr: 1.5,
-                        w_rtt: 1.5,
-                        w_vol: 0.05,
-                        w_fairness: 0.1,
+                        w_nfr: 0.5,
+                        w_rtt: 3.0,
+                        w_osc: 0.05,
+                        w_fairness: 0.5,
                         agent_config: SARSAConfigDefault {
                             load_model: false,
                             save_model: true,
+                            n_step: 3,
                             gamma: 0.95,
-                            lr: 1e-3,
+                            lr: 3e-4,
                             tau: 0.01,
-                            temperature: 0.3,
+                            temperature: 0.7,
                             hidden_dim: 64,
-                            action_multipliers: VectorDefault {
-                                gui_collapsed: true,
-                                element: 0.0,
-                                content: vec![-0.50, -0.20, -0.10, 0.0, 0.10, 0.20, 0.50],
-                            },
                         },
                     },
                     variant: BitrateModeDefaultVariant::Sarsa,
