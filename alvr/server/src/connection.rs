@@ -1301,6 +1301,8 @@ fn connection_pipeline(
                                 rtt = Duration::ZERO;
                             }
 
+                            let rx_bytes = network_stats.rx_bytes;
+
                             let (peak_network_throughput_bps, frame_interarrival_s) =
                                 stats.report_network_statistics(network_stats, rtt);
 
@@ -1308,6 +1310,7 @@ fn connection_pipeline(
                                 rtt,
                                 peak_network_throughput_bps,
                                 frame_interarrival_s,
+                                rx_bytes,
                             );
                         }
                     }

@@ -51,12 +51,11 @@ pub struct BitrateManager {
     frame_interarrival_s_average: SlidingWindowAverage<f32>,
 
     // Learning interval accumulators (for sarsa)
-    rtt_sum_s: f32, // rtt acumulator
-    rtt_count: u32,
-    frame_interval_sum_s: f32, // tx frame interval acumulator
-    frame_interval_count: u32,
-    frame_interarrival_sum_s: f32, // rx frame interval acumulator
-    frame_interarrival_count: u32,
+    rtt_samples_s: Vec<f32>,                // rtt
+    frame_interval_samples_s: Vec<f32>,     // tx frame interval
+    frame_interarrival_samples_s: Vec<f32>, // rx frame interval
+    total_rx_bits: f32,                     // total rx bits
+    total_frame_interarrival_s: f32,        // total rx frame interval
 
     // Reinforcement learning components
     sarsa_agent: Option<SarsaAgent>,
@@ -138,12 +137,11 @@ impl BitrateManager {
                 ewma_weight_val,
             ),
 
-            rtt_sum_s: 0.,
-            rtt_count: 0,
-            frame_interval_sum_s: 0.,
-            frame_interval_count: 0,
-            frame_interarrival_sum_s: 0.,
-            frame_interarrival_count: 0,
+            rtt_samples_s: Vec::with_capacity(200), // 200 samples is much more than enough
+            frame_interval_samples_s: Vec::with_capacity(200),
+            frame_interarrival_samples_s: Vec::with_capacity(200),
+            total_rx_bits: 0.0,
+            total_frame_interarrival_s: 0.0,
 
             sarsa_agent: None,
             env: None,
@@ -170,8 +168,7 @@ impl BitrateManager {
 
         self.frame_interval_average.submit_sample(interval);
 
-        self.frame_interval_sum_s += interval.as_secs_f32();
-        self.frame_interval_count += 1;
+        self.frame_interval_samples_s.push(interval.as_secs_f32());
 
         if let Some(config) = config.as_option() {
             let interval_ratio =
@@ -204,6 +201,7 @@ impl BitrateManager {
         network_rtt: Duration,
         peak_throughput_bps: f32,
         frame_interarrival_s: f32,
+        rx_bytes: u32,
     ) {
         self.rtt_average.submit_sample(network_rtt);
 
@@ -213,10 +211,12 @@ impl BitrateManager {
         self.frame_interarrival_s_average
             .submit_sample(frame_interarrival_s);
 
-        self.rtt_sum_s += network_rtt.as_secs_f32();
-        self.rtt_count += 1;
-        self.frame_interarrival_sum_s += frame_interarrival_s;
-        self.frame_interarrival_count += 1;
+        self.rtt_samples_s.push(network_rtt.as_secs_f32());
+
+        self.frame_interarrival_samples_s.push(frame_interarrival_s);
+
+        self.total_rx_bits += rx_bytes as f32 * 8.0;
+        self.total_frame_interarrival_s += frame_interarrival_s;
     }
 
     pub fn report_ap_statistics(&mut self, ap_stats: &APStats) {
@@ -274,31 +274,69 @@ impl BitrateManager {
         }
     }
 
-    fn get_interval_rtt_ms(&self) -> f32 {
-        if self.rtt_count > 0 {
-            self.rtt_sum_s * 1000.0 / self.rtt_count as f32
-        } else {
-            0.0
+    fn get_interval_rtt_ms_stats(&self) -> (f32, f32) {
+        // Returns (Mean, StdDev)
+        if self.rtt_samples_s.is_empty() {
+            return (0.0, 0.0);
         }
+
+        let count = self.rtt_samples_s.len() as f32;
+
+        // 1. Mean
+        let sum: f32 = self.rtt_samples_s.iter().sum();
+        let mean = sum / count;
+
+        // 2. Standard Deviation
+        let variance: f32 = self
+            .rtt_samples_s
+            .iter()
+            .map(|&val| {
+                let diff = mean - val;
+                diff * diff
+            })
+            .sum::<f32>()
+            / count;
+        let std_dev = variance.sqrt();
+
+        // Return in ms
+        (mean * 1000.0, std_dev * 1000.0)
     }
 
     fn get_interval_nfr(&self) -> f32 {
-        let fps_tx = if self.frame_interval_sum_s > 0.0 {
-            self.frame_interval_count as f32 / self.frame_interval_sum_s
-        } else {
-            0.0
-        };
-        let fps_rx = if self.frame_interarrival_sum_s > 0.0 {
-            self.frame_interarrival_count as f32 / self.frame_interarrival_sum_s
-        } else {
-            0.0
-        };
+        if self.frame_interval_samples_s.is_empty() || self.frame_interarrival_samples_s.is_empty()
+        {
+            return 0.0;
+        }
+
+        let count_tx = self.frame_interval_samples_s.len() as f32;
+        let sum_tx: f32 = self.frame_interval_samples_s.iter().sum();
+        let fps_tx = count_tx / sum_tx;
+
+        let count_rx = self.frame_interarrival_samples_s.len() as f32;
+        let sum_rx: f32 = self.frame_interarrival_samples_s.iter().sum();
+        let fps_rx = count_rx / sum_rx;
 
         if fps_tx > 0.0 {
             fps_rx / fps_tx
         } else {
             0.0
         }
+    }
+
+    fn get_interval_throughput_bps(&self) -> f32 {
+        if self.total_frame_interarrival_s == 0.0 {
+            return 0.0;
+        }
+        self.total_rx_bits / self.total_frame_interarrival_s
+    }
+
+    fn reset_sample_stats(&mut self) {
+        self.rtt_samples_s.clear();
+        self.frame_interval_samples_s.clear();
+        self.frame_interarrival_samples_s.clear();
+
+        self.total_rx_bits = 0.0;
+        self.total_frame_interarrival_s = 0.0;
     }
 
     pub fn get_encoder_params(
@@ -658,8 +696,9 @@ impl BitrateManager {
             BitrateMode::Sarsa { .. } => {
                 if self.sarsa_learning_enabled {
                     // 1. Calculate Interval Averages (Raw data between decisions)
-                    let rtt_ms = self.get_interval_rtt_ms();
+                    let (rtt_ms, rtt_std_dev_ms) = self.get_interval_rtt_ms_stats();
                     let nfr = self.get_interval_nfr();
+                    let actual_throughput_bps = self.get_interval_throughput_bps();
                     let wifi_metrics = self.wifi_processor.process(&self.ap_stats_buffer);
                     if let (Some(agent), Some(env)) = (&mut self.sarsa_agent, &mut self.env) {
                         // 2. Find current bitrate index
@@ -676,6 +715,8 @@ impl BitrateManager {
                         let snapshot = EnvironmentSnapshot {
                             nfr,
                             rtt_ms,
+                            rtt_std_dev_ms,
+                            actual_throughput_bps,
                             bitrate_bps,
                             bitrate_idx: current_bitrate_idx,
                             mcs_raw: wifi_metrics.mcs_raw,
@@ -762,12 +803,7 @@ impl BitrateManager {
 
         // Clear buffer and reset interval accumulators
         self.ap_stats_buffer.clear();
-        self.rtt_sum_s = 0.0;
-        self.rtt_count = 0;
-        self.frame_interval_sum_s = 0.0;
-        self.frame_interval_count = 0;
-        self.frame_interarrival_sum_s = 0.0;
-        self.frame_interarrival_count = 0;
+        self.reset_sample_stats();
 
         (
             FfiDynamicEncoderParams {

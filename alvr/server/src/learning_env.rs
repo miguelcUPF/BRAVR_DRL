@@ -1,6 +1,6 @@
 use tch::Tensor;
 
-pub const STATE_DIM: i64 = 13;
+pub const STATE_DIM: i64 = 15;
 const MAX_MCS: f32 = 11.0; // assuming 802.11ax
 
 #[derive(Clone, Debug)]
@@ -70,6 +70,8 @@ impl LearningConfig {
 pub struct EnvironmentSnapshot {
     pub nfr: f32,
     pub rtt_ms: f32,
+    pub rtt_std_dev_ms: f32,
+    pub actual_throughput_bps: f32,
     pub bitrate_bps: f32,
     pub bitrate_idx: usize,
 
@@ -102,7 +104,12 @@ impl StreamingEnvironment {
         // 1. Normalize Current Inputs
         let nfr_norm = snap.nfr.clamp(0.0, 1.0);
         let rtt_norm = (snap.rtt_ms / self.cfg.rtt_state_scale_ms).tanh();
+        let rtt_std_norm = (snap.rtt_std_dev_ms / 30.0).tanh();
         let mcs_norm = (snap.mcs_raw / MAX_MCS).clamp(0.0, 1.0);
+
+        let target_bps = snap.bitrate_bps.max(1.0);
+        let raw_efficiency = snap.actual_throughput_bps / target_bps;
+        let efficiency_norm = raw_efficiency.clamp(0.0, 1.0);
 
         let max_idx = (self.cfg.bitrate_levels_mbps.len().saturating_sub(1)) as f32;
         let br_norm = (snap.bitrate_idx as f32 / max_idx.max(1.0)).clamp(0.0, 1.0);
@@ -132,6 +139,8 @@ impl StreamingEnvironment {
             d_nfr,
             rtt_norm,
             d_rtt,
+            rtt_std_norm,
+            efficiency_norm,
             mcs_norm,
             d_mcs,
             br_norm,
