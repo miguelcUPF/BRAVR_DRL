@@ -721,6 +721,7 @@ impl BitrateManager {
                             bitrate_idx: current_bitrate_idx,
                             mcs_raw: wifi_metrics.mcs_raw,
                             channel_busy_pct: wifi_metrics.channel_busy_pct,
+                            tx_retry_rate: wifi_metrics.tx_retry_rate,
                             my_airtime_fraction: wifi_metrics.my_airtime_fraction,
                             active_vr_count: wifi_metrics.active_vr_count,
                             fairness_index: wifi_metrics.fairness_index,

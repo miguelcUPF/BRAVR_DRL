@@ -1,6 +1,6 @@
 use tch::Tensor;
 
-pub const STATE_DIM: i64 = 15;
+pub const STATE_DIM: i64 = 16;
 const MAX_MCS: f32 = 11.0; // assuming 802.11ax
 
 #[derive(Clone, Debug)]
@@ -78,6 +78,7 @@ pub struct EnvironmentSnapshot {
     // AP Telemetry
     pub mcs_raw: f32,
     pub channel_busy_pct: f32,
+    pub tx_retry_rate: f32,
     pub my_airtime_fraction: f32,
     pub active_vr_count: usize,
     pub fairness_index: f32,
@@ -145,6 +146,7 @@ impl StreamingEnvironment {
             d_mcs,
             br_norm,
             snap.channel_busy_pct,
+            snap.tx_retry_rate,
             snap.my_airtime_fraction,
             snap.fairness_index,
             prev_decrease,
