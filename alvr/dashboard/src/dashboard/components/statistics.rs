@@ -150,6 +150,7 @@ pub struct StatisticsTab {
     client_ip: Option<IpAddr>,
     bulk_ap_stats: bool,
     ap_stats_enabled: bool,
+    sarsa_stats_enabled: bool,
 }
 
 impl StatisticsTab {
@@ -171,6 +172,7 @@ impl StatisticsTab {
             client_ip: None,
             bulk_ap_stats: false,
             ap_stats_enabled: false,
+            sarsa_stats_enabled: false,
         }
     }
 
@@ -192,6 +194,14 @@ impl StatisticsTab {
 
     pub fn disable_bulk_ap_stats(&mut self) {
         self.bulk_ap_stats = false;
+    }
+
+    pub fn enable_sarsa_stats(&mut self) {
+        self.sarsa_stats_enabled = true;
+    }
+
+    pub fn disable_sarsa_stats(&mut self) {
+        self.sarsa_stats_enabled = false;
     }
 
     pub fn update_statistics(&mut self, statistics: StatisticsSummary) {
@@ -253,13 +263,15 @@ impl StatisticsTab {
                 self.draw_jitter(ui, available_width);
                 self.draw_frameloss(ui, available_width);
                 self.draw_frame_span_interarrival(ui, available_width);
-                ui.separator();
-                self.draw_sarsa_rewards(ui, available_width);
-                self.draw_sarsa_reward_components(ui, available_width);
-                self.draw_sarsa_td_error(ui, available_width);
-                self.draw_sarsa_entropy(ui, available_width);
-                self.draw_sarsa_q_values(ui, available_width);
-                self.draw_sarsa_action_probs(ui, available_width);
+                if self.sarsa_stats_enabled {
+                    ui.separator();
+                    self.draw_sarsa_rewards(ui, available_width);
+                    self.draw_sarsa_reward_components(ui, available_width);
+                    self.draw_sarsa_td_error(ui, available_width);
+                    self.draw_sarsa_entropy(ui, available_width);
+                    self.draw_sarsa_q_values(ui, available_width);
+                    self.draw_sarsa_action_probs(ui, available_width);
+                }
                 ui.separator();
                 if self.ap_stats_enabled {
                     self.draw_ap_clients_tx_mcs_graph(ui, available_width);

@@ -206,6 +206,12 @@ impl eframe::App for Dashboard {
                         }
                     }
 
+                    if let BitrateMode::Sarsa { .. } = &settings.video.bitrate.mode {
+                        self.statistics_tab.enable_sarsa_stats();
+                    } else {
+                        self.statistics_tab.disable_sarsa_stats();
+                    }
+
                     self.session = Some(*session);
                 }
                 EventType::ServerRequestsSelfRestart => self.restart_steamvr(&mut requests),
