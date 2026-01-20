@@ -1,5 +1,5 @@
 use crate::{
-    ap_telemetry::WifiStatsProcessor,
+    ap_telemetry::{WifiMetrics, WifiStatsProcessor},
     learning_env::{EnvironmentSnapshot, LearningConfig, StreamingEnvironment, STATE_DIM},
     sarsa_agent::{SarsaAgent, SarsaAgentConfig},
     FfiDynamicEncoderParams, FILESYSTEM_LAYOUT,
@@ -502,6 +502,7 @@ impl BitrateManager {
                         state_dim,
                         hidden_dim: agent_config.hidden_dim as i64,
                         action_shielding_enabled: agent_config.action_shielding_enabled,
+                        ap_info_enabled: agent_config.ap_info_enabled,
                         model_path: model_path_buf,
                         load_model: agent_config.load_model,
                         save_model: agent_config.save_model,
@@ -797,8 +798,11 @@ impl BitrateManager {
                     let (rtt_ms, rtt_std_dev_ms) = self.get_interval_rtt_ms_stats();
                     let nfr = self.get_interval_nfr();
                     let actual_throughput_bps = self.get_interval_throughput_bps();
-                    let wifi_metrics = self.wifi_processor.process(&self.ap_stats_buffer);
+                    let mut wifi_metrics = self.wifi_processor.process(&self.ap_stats_buffer);
                     if let (Some(agent), Some(env)) = (&mut self.sarsa_agent, &mut self.env) {
+                        if !agent.cfg.ap_info_enabled {
+                            wifi_metrics = WifiMetrics::default();
+                        }
                         // 2. Find current bitrate index
                         let bitrate_bps = self.last_target_bitrate_bps;
                         let current_bitrate_mbps = bitrate_bps / 1e6;

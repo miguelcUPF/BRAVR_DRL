@@ -22,6 +22,9 @@ pub struct SarsaAgentConfig {
     // Action Shielding
     pub action_shielding_enabled: bool,
 
+    // AP Telemetry for decision-making
+    pub ap_info_enabled: bool,
+
     // Persistence
     pub model_path: PathBuf,
     pub load_model: bool,

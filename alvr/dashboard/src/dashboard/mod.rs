@@ -197,11 +197,21 @@ impl eframe::App for Dashboard {
                             } else {
                                 self.statistics_tab.disable_bulk_ap_stats();
                             }
+
+                            if let BitrateMode::Sarsa { agent_config, .. } =
+                                &settings.video.bitrate.mode
+                            {
+                                if !agent_config.ap_info_enabled {
+                                    warn!(
+                                        "HTTP server collection and SARSA are both enabled but AP info is disabled. The agent will not use AP telemetry to guide its decisions."
+                                    );
+                                }
+                            }
                         }
                         Switch::Disabled => {
                             self.statistics_tab.disable_ap_stats();
                             if let BitrateMode::Sarsa { .. } = &settings.video.bitrate.mode {
-                                warn!("HTTP server is disabled but SARSA is enabled. Some features may not work.");
+                                warn!("HTTP server collection is disabled but SARSA is enabled. The agent will not use AP telemetry to guide its decisions.");
                             }
                         }
                     }

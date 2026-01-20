@@ -423,6 +423,13 @@ pub struct SARSAConfig {
     pub action_shielding_enabled: bool,
 
     #[schema(strings(
+        display_name = "Enable AP Info Utilization",
+        help = "Enables the agent to use the AP's current network statistics to guide its decision-making process."
+    ))]
+    #[schema(flag = "steamvr-restart")]
+    pub ap_info_enabled: bool,
+
+    #[schema(strings(
         display_name = "N-Step Lookahead",
         help = "How many future steps to observe before updating the value estimate."
     ))]
@@ -1625,6 +1632,7 @@ pub fn session_settings_default() -> SettingsDefault {
                             load_model: false,
                             save_model: true,
                             action_shielding_enabled: true,
+                            ap_info_enabled: true,
                             n_step: 3,
                             gamma: 0.9,
                             lr: 3e-4,
