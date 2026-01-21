@@ -203,12 +203,14 @@ impl StreamingEnvironment {
                 current_dir = -1;
             }
 
-            // Check Zig-Zag: If we moved opposite to the last move
-            if current_dir != 0 && current_dir == -self.last_move_dir {
-                osc_penalty = 1.0;
+            // Check Zig-Zag Trend
+            if current_dir != 0 {
+                if current_dir == -self.last_move_dir {
+                    osc_penalty = 1.0;
+                }
+                self.last_move_dir = current_dir;
             }
         }
-        self.last_move_dir = current_dir;
         self.prev_bitrate_idx = Some(snap.bitrate_idx);
 
         // 5. Fairness Penalty
