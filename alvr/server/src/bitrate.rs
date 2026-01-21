@@ -364,15 +364,14 @@ impl BitrateManager {
             mask[2] = false;
         }
 
+        // RULE 2: Safety Shielding
         if shielding {
-            // Rule 2: Latency safety (if RTT is too high, decrease bitrate)
-            if snap.rtt_ms > env.cfg.rtt_max_ms {
-                (mask[1], mask[2]) = (false, false);
-            }
+            let is_emergency =
+                snap.rtt_ms > env.cfg.rtt_max_ms || (1.0 - snap.nfr > env.cfg.nfr_deficit_max);
 
-            // Rule 3: Loss panic (if NFR is too low, decrease bitrate)
-            if 1.0 - snap.nfr > env.cfg.nfr_deficit_max {
-                (mask[1], mask[2]) = (false, false);
+            if is_emergency {
+                // Block Increase strictly
+                mask[2] = false;
             }
         }
 
