@@ -572,7 +572,7 @@ pub enum BitrateMode {
 
         #[schema(strings(
             display_name = "Shield: Max NFR Deficit Tolerance",
-            help = "The maximum allowable drop in NFR (1.0 - NFR) before the Shield blocks bitrate increases. e.g. 0.05 means if NFR drops below 95%, increasing is forbidden."
+            help = "The maximum allowable drop in NFR (1.0 - NFR) before the Shield enforces bitrate decreases. e.g. 0.05 means if NFR drops below 95%, decreasing is enforced."
         ))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.0, max = 0.2, step = 0.005)))]
@@ -585,7 +585,7 @@ pub enum BitrateMode {
 
         #[schema(strings(
             display_name = "Shield: Max RTT for Increase",
-            help = "The latency threshold above which the Shield strictly forbids increasing the bitrate. Acts as a 'hard ceiling' for safety."
+            help = "The latency threshold above which the Shield strictly enforces decreasing the bitrate. Acts as a 'hard ceiling' for safety."
         ))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 20.0, max = 200.0, step = 1.0)), suffix = " ms")]

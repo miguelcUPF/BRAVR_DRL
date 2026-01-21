@@ -352,6 +352,7 @@ impl BitrateManager {
         snap: &EnvironmentSnapshot,
         current_idx: usize,
         max_idx: usize,
+        shielding: bool,
     ) -> Vec<bool> {
         // 0 = Decrease, 1 = Hold, 2 = Increase
         let mut mask = vec![true, true, true];
@@ -363,14 +364,16 @@ impl BitrateManager {
             mask[2] = false;
         }
 
-        // Rule 2: Latency safety (if RTT is too high, don't increase bitrate)
-        if snap.rtt_ms > env.cfg.rtt_max_ms {
-            mask[2] = false;
-        }
+        if shielding {
+            // Rule 2: Latency safety (if RTT is too high, decrease bitrate)
+            if snap.rtt_ms > env.cfg.rtt_max_ms {
+                (mask[1], mask[2]) = (false, false);
+            }
 
-        // Rule 3: Loss panic (if NFR is too low, don't increase bitrate)
-        if 1.0 - snap.nfr > env.cfg.nfr_deficit_max {
-            mask[2] = false;
+            // Rule 3: Loss panic (if NFR is too low, decrease bitrate)
+            if 1.0 - snap.nfr > env.cfg.nfr_deficit_max {
+                (mask[1], mask[2]) = (false, false);
+            }
         }
 
         mask
@@ -849,15 +852,13 @@ impl BitrateManager {
                         let s_prev_str = vec_to_str(&agent.s_prev);
                         let a_prev_idx = agent.a_prev_idx;
 
-                        let mut action_mask = vec![true, true, true];
-                        if agent.cfg.action_shielding_enabled {
-                            action_mask = Self::get_action_mask(
-                                &env,
-                                &snapshot,
-                                current_bitrate_idx,
-                                env.cfg.bitrate_levels_mbps.len() - 1, // max_idx
-                            );
-                        };
+                        let action_mask = Self::get_action_mask(
+                            &env,
+                            &snapshot,
+                            current_bitrate_idx,
+                            env.cfg.bitrate_levels_mbps.len() - 1, // max_idx
+                            agent.cfg.action_shielding_enabled,
+                        );
 
                         // Select action
                         let (a_t_idx, q_values, action_probs, policy_entropy, matches_argmax) =
