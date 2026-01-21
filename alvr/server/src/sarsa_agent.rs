@@ -3,8 +3,6 @@ use rand::{distributions::Distribution, distributions::WeightedIndex, thread_rng
 use std::{collections::VecDeque, path::PathBuf};
 use tch::{nn, nn::Module, nn::OptimizerConfig, Kind, Tensor};
 
-const N_ACTIONS: i64 = 3; // -1 = decrease, 0 = hold, 1 = increase
-
 #[derive(Clone, Debug)]
 pub struct SarsaAgentConfig {
     // Learning Hyperparameters
@@ -18,6 +16,7 @@ pub struct SarsaAgentConfig {
     // Neural Network Architecture
     pub state_dim: i64,
     pub hidden_dim: i64,
+    pub action_dim: i64,
 
     // Action Shielding
     pub action_shielding_enabled: bool,
@@ -73,6 +72,25 @@ impl SarsaAgent {
         // 1. Setup Main Network
         let mut vs = nn::VarStore::new(device);
         let net = Self::build_net(&vs.root(), &cfg);
+
+        // Force the network to output high Q-values initially
+        tch::no_grad(|| {
+            let mut vars = vs.variables();
+
+            let optimistic_value = 8.0; // A value higher than the max theoretical reward
+            if let Some(out_bias) = vars.get_mut("out.bias") {
+                let _ = out_bias.fill_(optimistic_value);
+                info!("SARSA: Initialized output bias to {}", optimistic_value);
+            } else {
+                warn!("SARSA: Could not find 'out.bias' for initialization!");
+            }
+
+            // Set the output weight to a small value close to 0
+            if let Some(out_weight) = vars.get_mut("out.weight") {
+                let _ = out_weight.uniform_(-0.001, 0.001);
+                info!("SARSA: Initialized output weight to near 0.0");
+            }
+        });
 
         // Load existing model if requested
         if cfg.load_model {
@@ -138,7 +156,7 @@ impl SarsaAgent {
             .add(nn::linear(
                 p / "out",
                 cfg.hidden_dim,
-                N_ACTIONS,
+                cfg.action_dim,
                 Default::default(),
             ))
     }
@@ -157,6 +175,8 @@ impl SarsaAgent {
             // Forward pass through Main Network
             let q_values = self.net.forward(&s); // Output shape: [1, 3]
             let q_vec: Vec<f32> = Vec::try_from(q_values.view([-1])).unwrap();
+
+            let n_actions = q_vec.len();
 
             // Boltzmann distribution calculation
             // P(a) = exp(Q(s,a) / T) / sum(exp(Q(s,a) / T))
@@ -178,7 +198,7 @@ impl SarsaAgent {
             let mut probs: Vec<f32> = if sum > 1e-9 {
                 exp.iter().map(|v| v / sum).collect()
             } else {
-                vec![1.0 / N_ACTIONS as f32; N_ACTIONS as usize]
+                vec![1.0 / n_actions as f32; n_actions as usize]
             };
 
             // Ensure minimum exploration (among allowed actions)

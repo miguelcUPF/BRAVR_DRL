@@ -351,17 +351,19 @@ impl BitrateManager {
         env: &StreamingEnvironment,
         snap: &EnvironmentSnapshot,
         current_idx: usize,
-        max_idx: usize,
+        ladder_len: usize,
         shielding: bool,
     ) -> Vec<bool> {
-        // 0 = Decrease, 1 = Hold, 2 = Increase
-        let mut mask = vec![true, true, true];
+        let mut mask = vec![false; ladder_len];
 
-        // Rule 1: Physical boundaries (cannot go below minimum or above maximum)
-        if current_idx == 0 {
-            mask[0] = false;
-        } else if current_idx == max_idx {
-            mask[2] = false;
+        // RULE 1: Neighbor Masking
+        // Allow current, current-1, current+1
+        let step_limit = 1;
+        let start = current_idx.saturating_sub(step_limit);
+        let end = (current_idx + step_limit).min(ladder_len - 1);
+
+        for i in start..=end {
+            mask[i] = true;
         }
 
         // RULE 2: Safety Shielding
@@ -370,8 +372,11 @@ impl BitrateManager {
                 snap.rtt_ms > env.cfg.rtt_max_ms || (1.0 - snap.nfr > env.cfg.nfr_deficit_max);
 
             if is_emergency {
-                // Block Increase strictly
-                mask[2] = false;
+                // Strictly forbid indices higher than current
+                // This turns the window from [n-1, n, n+1] into [n-1, n]
+                for i in (current_idx + 1)..ladder_len {
+                    mask[i] = false;
+                }
             }
         }
 
@@ -503,6 +508,7 @@ impl BitrateManager {
                         epsilon: agent_config.epsilon,
                         state_dim,
                         hidden_dim: agent_config.hidden_dim as i64,
+                        action_dim: bitrate_levels_mbps.len() as i64,
                         action_shielding_enabled: agent_config.action_shielding_enabled,
                         ap_info_enabled: agent_config.ap_info_enabled,
                         model_path: model_path_buf,
@@ -851,11 +857,12 @@ impl BitrateManager {
                         let s_prev_str = vec_to_str(&agent.s_prev);
                         let a_prev_idx = agent.a_prev_idx;
 
+                        let ladder_len = env.cfg.bitrate_levels_mbps.len();
                         let action_mask = Self::get_action_mask(
                             &env,
                             &snapshot,
                             current_bitrate_idx,
-                            env.cfg.bitrate_levels_mbps.len() - 1, // max_idx
+                            ladder_len,
                             agent.cfg.action_shielding_enabled,
                         );
 
@@ -866,14 +873,8 @@ impl BitrateManager {
                         let td_error = agent.update(reward, &s_t, a_t_idx);
 
                         // 5. Apply action
-                        let next_bitrate_idx = match a_t_idx {
-                            0 => current_bitrate_idx.saturating_sub(1),
-                            1 => current_bitrate_idx,
-                            2 => {
-                                (current_bitrate_idx + 1).min(env.cfg.bitrate_levels_mbps.len() - 1)
-                            }
-                            _ => current_bitrate_idx,
-                        };
+                        let next_bitrate_idx = (a_t_idx as usize).clamp(0, ladder_len - 1);
+
                         let new_bitrate_bps = env.cfg.bitrate_levels_mbps[next_bitrate_idx] * 1e6;
 
                         // 6. Stats

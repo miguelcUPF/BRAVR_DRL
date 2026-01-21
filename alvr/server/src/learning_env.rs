@@ -1,6 +1,6 @@
 use tch::Tensor;
 
-pub const STATE_DIM: i64 = 16;
+pub const STATE_DIM: i64 = 14;
 const MAX_MCS: f32 = 11.0; // assuming 802.11ax
 
 #[derive(Clone, Debug)]
@@ -140,10 +140,8 @@ impl StreamingEnvironment {
         // 3. Update history
         self.prev_norm_vals = Some((nfr_norm, rtt_norm, mcs_norm));
 
-        // 4. One-hot encoding previous action
-        let prev_decrease = if self.last_move_dir == -1 { 1.0 } else { 0.0 };
-        let prev_hold = if self.last_move_dir == 0 { 1.0 } else { 0.0 };
-        let prev_increase = if self.last_move_dir == 1 { 1.0 } else { 0.0 };
+        // 4. Trend Scalar
+        let trend_scalar = self.last_move_dir as f32;
 
         // 5. Build State Tensor
         let state_vec = vec![
@@ -160,9 +158,7 @@ impl StreamingEnvironment {
             snap.tx_retry_rate,
             snap.my_airtime_fraction,
             snap.fairness_index,
-            prev_decrease,
-            prev_hold,
-            prev_increase,
+            trend_scalar,
         ];
 
         Tensor::from_slice(&state_vec).unsqueeze(0)

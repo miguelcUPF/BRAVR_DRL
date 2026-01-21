@@ -1,6 +1,7 @@
 mod ap_stats;
 mod average;
 mod connection_result;
+mod helpers;
 mod inputs;
 mod logging;
 mod primitives;
@@ -24,6 +25,7 @@ pub use settings_schema;
 pub use ap_stats::*;
 pub use average::*;
 pub use connection_result::*;
+pub use helpers::*;
 pub use inputs::*;
 pub use log::{debug, error, info, warn};
 pub use logging::*;

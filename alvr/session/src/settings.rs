@@ -1,4 +1,6 @@
-use alvr_common::{LogSeverity, LogSeverityDefault, LogSeverityDefaultVariant};
+use alvr_common::{
+    generate_log_ladder, LogSeverity, LogSeverityDefault, LogSeverityDefaultVariant,
+};
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 use settings_schema::{
@@ -1616,7 +1618,7 @@ pub fn session_settings_default() -> SettingsDefault {
                         bitrate_levels_mbps: VectorDefault {
                             gui_collapsed: true,
                             element: 0.0,
-                            content: (1..=100).step_by(9).map(|x| x as f32).collect(),
+                            content: generate_log_ladder(2.0, 100.0, 10),
                         },
                         nfr_target: 0.99,
                         nfr_deficit_max: 0.05,
@@ -1631,7 +1633,7 @@ pub fn session_settings_default() -> SettingsDefault {
                         agent_config: SARSAConfigDefault {
                             load_model: false,
                             save_model: true,
-                            action_shielding_enabled: false,
+                            action_shielding_enabled: true,
                             ap_info_enabled: true,
                             n_step: 3,
                             gamma: 0.9,
@@ -1639,7 +1641,7 @@ pub fn session_settings_default() -> SettingsDefault {
                             tau: 0.01,
                             temperature: 0.7,
                             epsilon: 0.05,
-                            hidden_dim: 64,
+                            hidden_dim: 128,
                         },
                     },
                     variant: BitrateModeDefaultVariant::Sarsa,
