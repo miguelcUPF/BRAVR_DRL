@@ -1616,9 +1616,9 @@ pub fn session_settings_default() -> SettingsDefault {
                         bitrate_levels_mbps: VectorDefault {
                             gui_collapsed: true,
                             element: 0.0,
-                            content: vec![5.0, 10.0, 15.0, 20.0, 25.0, 30.0],
+                            content: (1..=100).step_by(9).map(|x| x as f32).collect(),
                         },
-                        nfr_target: 0.95,
+                        nfr_target: 0.99,
                         nfr_deficit_max: 0.05,
                         rtt_target_ms: 22.0,
                         rtt_max_ms: 50.0,
@@ -1631,7 +1631,7 @@ pub fn session_settings_default() -> SettingsDefault {
                         agent_config: SARSAConfigDefault {
                             load_model: false,
                             save_model: true,
-                            action_shielding_enabled: true,
+                            action_shielding_enabled: false,
                             ap_info_enabled: true,
                             n_step: 3,
                             gamma: 0.9,
