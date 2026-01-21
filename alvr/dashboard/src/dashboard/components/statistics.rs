@@ -868,38 +868,34 @@ impl StatisticsTab {
                     .iter()
                     .find(|i| i.interface == iface.interface)
                 {
-                    let act = match hist_iface.ch_active_time_ms {
-                        Some(v) if v > 0 => v,
-                        _ => continue, // skip invalid/missing snapshot
-                    };
-                    let busy = match hist_iface.ch_busy_time_ms { Some(v) => v, None => continue };
-                    let rx   = match hist_iface.ch_rx_time_ms   { Some(v) => v, None => continue };
-                    let tx   = match hist_iface.ch_tx_time_ms   { Some(v) => v, None => continue };
-
-                    if let (Some(p_busy), Some(p_active)) =
-                        (prev_busy, prev_active)
+                    if let (Some(p_act), Some(c_act),
+                            Some(p_busy), Some(c_busy)) =
+                        (prev_active, hist_iface.ch_active_time_ms,
+                        prev_busy,   hist_iface.ch_busy_time_ms)
                     {
-                        let delta_active = act - p_active;
+                        let delta_active = c_act - p_act;
                         if delta_active > 0 {
                             let x = idx as f32;
 
-                            let busy_p = (busy - p_busy)  as f32 * 100.0 / delta_active as f32;
+                            let busy_p = (c_busy - p_busy)  as f32 * 100.0 / delta_active as f32;
                             busy_points.push(to_screen_trans * pos2(x, busy_p));
 
                             if self.bulk_ap_stats {
-                                if let (Some(p_rx), Some(p_tx)) = (prev_rx, prev_tx) {
-                                    rx_points.push(to_screen_trans * pos2(x, (rx - p_rx) as f32 * 100.0 / delta_active as f32));
-                                    tx_points.push(to_screen_trans * pos2(x, (tx - p_tx) as f32 * 100.0 / delta_active as f32));
+                                if let (Some(p_rx), Some(c_rx)) = (prev_rx, hist_iface.ch_rx_time_ms) {
+                                    rx_points.push(to_screen_trans * pos2(x, (c_rx - p_rx) as f32 * 100.0 / delta_active as f32));
+                                }
+                                if let (Some(p_tx), Some(c_tx)) = (prev_tx, hist_iface.ch_tx_time_ms) {
+                                    tx_points.push(to_screen_trans * pos2(x, (c_tx - p_tx) as f32 * 100.0 / delta_active as f32));
                                 }
                             }
                         }
                     }
 
                     // Update previous counters
-                    prev_busy   = Some(busy);
-                    prev_rx     = Some(rx);
-                    prev_tx     = Some(tx);
-                    prev_active = Some(act);
+                    prev_active = hist_iface.ch_active_time_ms;
+                    prev_busy   = hist_iface.ch_busy_time_ms;
+                    prev_rx     = hist_iface.ch_rx_time_ms;
+                    prev_tx     = hist_iface.ch_tx_time_ms;
                 }
             }
 
