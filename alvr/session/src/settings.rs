@@ -1618,7 +1618,8 @@ pub fn session_settings_default() -> SettingsDefault {
                         bitrate_levels_mbps: VectorDefault {
                             gui_collapsed: true,
                             element: 0.0,
-                            content: generate_log_ladder(2.0, 100.0, 10),
+                            // content: generate_log_ladder(2.0, 100.0, 10),
+                            content: (1..=100).step_by(9).map(|x| x as f32).collect(),
                         },
                         nfr_target: 0.99,
                         nfr_deficit_max: 0.05,
@@ -1629,7 +1630,7 @@ pub fn session_settings_default() -> SettingsDefault {
                         w_nfr: 0.5,
                         w_rtt: 3.0,
                         w_osc: 0.05,
-                        w_fairness: 0.5,
+                        w_fairness: 0.0,
                         agent_config: SARSAConfigDefault {
                             load_model: false,
                             save_model: true,
