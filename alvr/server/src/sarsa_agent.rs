@@ -232,7 +232,7 @@ impl SarsaAgent {
                 .enumerate()
                 .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
                 .map(|(i, _)| i)
-                .unwrap() as i64;
+                .unwrap_or(usize::MAX) as i64;
 
             (idx, q_vec, probs, entropy, idx == argmax_idx)
         })
