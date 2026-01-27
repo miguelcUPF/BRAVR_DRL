@@ -357,7 +357,7 @@ impl StatisticsTab {
         title: &str,
         data_range: RangeInclusive<f32>,
         graph_content: impl FnOnce(&Painter, RectTransform),
-        tooltip_content: impl FnOnce(&mut Ui, &SARSAStats),
+        tooltip_content: impl FnOnce(&mut Ui, &SARSAStats, Option<&SARSAStats>),
     ) {
         ui.add_space(10.0);
         ui.label(RichText::new(title).size(20.0));
@@ -401,8 +401,12 @@ impl StatisticsTab {
             let history_index = (graph_pos.x as usize).clamp(0, GRAPH_HISTORY_SIZE_SARSA - 1);
 
             if let Some(stats) = self.history_sarsa.get(history_index) {
+                let prev = history_index
+                    .checked_sub(1)
+                    .and_then(|i| self.history_sarsa.get(i));
+
                 popup::show_tooltip(ui.ctx(), Id::new("sarsa_popup"), |ui| {
-                    tooltip_content(ui, stats)
+                    tooltip_content(ui, stats, prev)
                 });
             }
         }
@@ -496,7 +500,7 @@ impl StatisticsTab {
 
                 draw_lines(painter, points, Color32::RED);
             },
-            |ui, stats| {
+            |ui, stats, prev| {
                 ui.colored_label(
                     Color32::RED,
                     format!("|TD error|: {:.4}", stats.td_error.abs()),
@@ -536,7 +540,7 @@ impl StatisticsTab {
 
                 draw_lines(painter, points, Color32::LIGHT_BLUE);
             },
-            |ui, stats| {
+            |ui, stats, prev| {
                 ui.colored_label(
                     Color32::LIGHT_BLUE,
                     format!("Entropy: {:.3}", stats.policy_entropy),
@@ -586,7 +590,7 @@ impl StatisticsTab {
                     draw_lines(painter, points, color);
                 }
             },
-            |ui, stats| {
+            |ui, stats, prev| {
                 ui.label("Q-values:");
                 for (i, q) in stats.q_values.iter().enumerate() {
                     let color = Color32::from_rgb(
@@ -631,7 +635,7 @@ impl StatisticsTab {
                     draw_lines(painter, points, color);
                 }
             },
-            |ui, stats| {
+            |ui, stats, prev| {
                 ui.label("Action probabilities:");
                 for (i, p) in stats.action_probs.iter().enumerate() {
                     let color = Color32::from_rgb(
@@ -675,18 +679,21 @@ impl StatisticsTab {
 
                 draw_lines(painter, reward_points, Color32::GREEN);
             },
-            |ui, stats| {
+            |ui, stats, prev| {
                 ui.colored_label(Color32::GREEN, format!("Reward: {:.2}", stats.r_prev));
-                ui.label(format!(
-                    "Bitrate: {:.1} Mbps",
-                    stats.requested_bitrate_bps / 1e6
-                ));
-                ui.label(format!("Action idx: {}", stats.a_t_idx));
 
-                if stats.matches_argmax {
-                    ui.label("Type: Exploit"); // sampled action equals highest Q-value
-                } else {
-                    ui.label("Type: Explore"); // sampled action differs from argmax
+                if let Some(prev_stats) = prev {
+                    ui.label(format!(
+                        "Prev bitrate: {:.1} Mbps",
+                        prev_stats.requested_bitrate_bps / 1e6
+                    ));
+                    ui.label(format!("Action idx: {}", prev_stats.a_t_idx));
+
+                    if prev_stats.matches_argmax {
+                        ui.label("Type: Exploit"); // sampled action equals highest Q-value
+                    } else {
+                        ui.label("Type: Explore"); // sampled action differs from argmax
+                    }
                 }
             },
         );
@@ -753,7 +760,7 @@ impl StatisticsTab {
                     }
                 }
             },
-            move |ui, stats| {
+            move |ui, stats, prev| {
                 for (idx, val) in stats.r_components.iter().enumerate() {
                     let color = colors_tooltip[idx % colors_tooltip.len()];
                     ui.colored_label(color, format!("{}: {:+.4}", labels_tooltip[idx], val));
