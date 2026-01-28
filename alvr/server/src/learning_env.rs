@@ -166,19 +166,18 @@ impl StreamingEnvironment {
 
     pub fn compute_reward(&mut self, snap: &EnvironmentSnapshot) -> (f32, Vec<f32>) {
         // 1. Bitrate Utility (Logarithmic Min-Max)
-        let b_min = *self.cfg.bitrate_levels_mbps.first().unwrap_or(&2.0);
-        let b_max = *self.cfg.bitrate_levels_mbps.last().unwrap_or(&50.0);
+        let b_min = *self.cfg.bitrate_levels_mbps.first().unwrap();
+        let b_max = *self.cfg.bitrate_levels_mbps.last().unwrap();
         let b_curr = snap.bitrate_bps / 1e6;
 
-        let log_curr = (1.0 + b_curr).ln();
-        let log_min = (1.0 + b_min).ln();
-        let log_max = (1.0 + b_max).ln();
+        let safe_curr = b_curr.max(0.1);
+        let safe_min = b_min.max(0.1);
+        let safe_max = b_max.max(safe_min + 0.1); // Ensure max > min
 
-        let br_utility = if log_max > log_min {
-            ((log_curr - log_min) / (log_max - log_min)).clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
+        let numerator = (safe_curr / safe_min).ln();
+        let denominator = (safe_max / safe_min).ln();
+
+        let br_utility = numerator / denominator;
 
         // 2. NFR Penalty
         let nfr_deficit = (self.cfg.nfr_target - snap.nfr).max(0.0);
@@ -216,7 +215,7 @@ impl StreamingEnvironment {
         let fairness_penalty = deviation.powi(2);
 
         // 5. Calculate weighted sum
-        let reward = (self.cfg.w_bitrate * br_utility)
+        let reward = (self.cfg.w_bitrate * (br_utility - 1.0))
             - (self.cfg.w_nfr * nfr_penalty)
             - (self.cfg.w_rtt * rtt_penalty)
             - (self.cfg.w_osc * osc_penalty)
@@ -225,7 +224,7 @@ impl StreamingEnvironment {
         (
             reward,
             vec![
-                self.cfg.w_bitrate * br_utility,
+                self.cfg.w_bitrate * (br_utility - 1.0),
                 -self.cfg.w_nfr * nfr_penalty,
                 -self.cfg.w_rtt * rtt_penalty,
                 -self.cfg.w_osc * osc_penalty,
