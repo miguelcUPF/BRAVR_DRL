@@ -77,7 +77,7 @@ impl SarsaAgent {
         tch::no_grad(|| {
             let mut vars = vs.variables();
 
-            let optimistic_value = 8.0; // A value higher than the max theoretical reward
+            let optimistic_value = 0.0; // A value higher than the max theoretical reward
             if let Some(out_bias) = vars.get_mut("out.bias") {
                 let _ = out_bias.fill_(optimistic_value);
                 info!("SARSA: Initialized output bias to {}", optimistic_value);
@@ -245,7 +245,7 @@ impl SarsaAgent {
     /// G = R_{t-N+1} + gamma*R_{t-N+2} + ... + gamma^N * V_expected(s_{t+1})
     ///
     /// Returns: TD Error (scalar)
-    pub fn update(&mut self, r_t: f32, s_t: &Tensor, a_t_idx: i64) -> f32 {
+    pub fn update(&mut self, r_t: f32, s_t: &Tensor, a_t_idx: i64, mask_next: &[bool]) -> f32 {
         let mut td_error = 0.0;
         if let (Some(last_s), Some(last_a)) = (&self.s_prev, self.a_prev_idx) {
             // Push transition: (S_{t-1}, A_{t-1}, R_t)
@@ -257,7 +257,7 @@ impl SarsaAgent {
 
             // If buffer is full enough (warmup), learn
             if self.buffer.len() >= self.cfg.n_step {
-                td_error = self.learn_from_buffer(s_t);
+                td_error = self.learn_from_buffer(s_t, mask_next);
             }
         }
 
@@ -268,7 +268,7 @@ impl SarsaAgent {
         td_error
     }
 
-    fn learn_from_buffer(&mut self, s_next: &Tensor) -> f32 {
+    fn learn_from_buffer(&mut self, s_next: &Tensor, mask_next: &[bool]) -> f32 {
         let oldest = self.buffer.pop_front().unwrap();
         let s_old = oldest.s.view([1, -1]).to_device(self.device);
         let a_old_idx = Tensor::from_slice(&[oldest.a_idx])
@@ -284,24 +284,69 @@ impl SarsaAgent {
             g += discount * trans.r;
         }
 
-        // Bootstrap: Calculate V(s_{t+1})
+        // Bootstrap: Calculate V(s_{t+1}) using MASKED probabilities
         let s_bootstrap = s_next.view([1, -1]).to_device(self.device);
         let final_gamma = discount * self.cfg.gamma;
+
         let v_expected = tch::no_grad(|| {
-            let q_target_vals = self.target_net.forward(&s_bootstrap);
+            // A. Get Q-values from BOTH networks
+            // Main Net determines the POLICY (probabilities)
             let q_main_vals = self.net.forward(&s_bootstrap);
-
             let q_main_vec: Vec<f32> = Vec::try_from(q_main_vals.view([-1])).unwrap();
-            let temp = self.cfg.temperature.max(1e-6) as f32;
-            let sum: f32 = q_main_vec.iter().map(|q| (q / temp).exp()).sum();
-            let probs: Vec<f32> = q_main_vec.iter().map(|q| (q / temp).exp() / sum).collect();
 
+            // Target Net determines the VALUE (evaluation)
+            let q_target_vals = self.target_net.forward(&s_bootstrap);
             let q_target_vec: Vec<f32> = Vec::try_from(q_target_vals.view([-1])).unwrap();
-            probs
-                .iter()
-                .zip(q_target_vec.iter())
-                .map(|(p, q)| p * q)
-                .sum::<f32>()
+
+            // B. Find Max Q on MAIN NET (for numerical stability of Softmax)
+            // We strictly ignore forbidden actions here.
+            let mut max_q_main = f32::NEG_INFINITY;
+            let mut valid_indices = Vec::new();
+
+            for (i, &is_allowed) in mask_next.iter().enumerate() {
+                if is_allowed {
+                    valid_indices.push(i);
+                    if q_main_vec[i] > max_q_main {
+                        max_q_main = q_main_vec[i];
+                    }
+                }
+            }
+
+            // Safety check for empty mask
+            if valid_indices.is_empty() {
+                return 0.0;
+            }
+
+            // C. Calculate Boltzmann Probabilities using MAIN NET values
+            let temp = self.cfg.temperature.max(1e-6) as f32;
+            let mut sum_exp = 0.0;
+            let mut probs = vec![0.0; q_main_vec.len()];
+
+            for &i in &valid_indices {
+                // Subtract max_q_main to prevent overflow
+                let val = ((q_main_vec[i] - max_q_main) / temp).exp();
+                probs[i] = val;
+                sum_exp += val;
+            }
+
+            // D. Compute Expected Value using TARGET NET values
+            // V = Sum( Prob_main[a] * Q_target[a] )
+            let mut expected_val = 0.0;
+            if sum_exp > 1e-9 {
+                for &i in &valid_indices {
+                    let p = probs[i] / sum_exp; // Normalize
+                    expected_val += p * q_target_vec[i]; // Weighted sum of Target Qs
+                }
+            } else {
+                // Fallback: Uniform average over valid actions
+                let count = valid_indices.len() as f32;
+                for &i in &valid_indices {
+                    expected_val += q_target_vec[i];
+                }
+                expected_val /= count;
+            }
+
+            expected_val
         });
         g += final_gamma * v_expected;
 

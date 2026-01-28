@@ -870,7 +870,7 @@ impl BitrateManager {
                         let (a_t_idx, q_values, action_probs, policy_entropy, matches_argmax) =
                             agent.select_action(&s_t, &action_mask);
                         // Perform SARSA update (s_{t-1}, a_{t-1}, r_{t-1}, s_t, a_t)
-                        let td_error = agent.update(reward, &s_t, a_t_idx);
+                        let td_error = agent.update(reward, &s_t, a_t_idx, &action_mask);
 
                         // 5. Apply action
                         let next_bitrate_idx = (a_t_idx as usize).clamp(0, ladder_len - 1);
