@@ -123,8 +123,14 @@ impl StreamingEnvironment {
         let raw_efficiency = snap.actual_throughput_bps / target_bps;
         let efficiency_norm = raw_efficiency.clamp(0.0, 1.0);
 
-        let max_idx = (self.cfg.bitrate_levels_mbps.len().saturating_sub(1)) as f32;
-        let br_norm = (snap.bitrate_idx as f32 / max_idx.max(1.0)).clamp(0.0, 1.0);
+        let b_min = *self.cfg.bitrate_levels_mbps.first().unwrap();
+        let b_max = *self.cfg.bitrate_levels_mbps.last().unwrap();
+        let b_curr = snap.bitrate_bps / 1e6;
+
+        let safe_curr = b_curr.max(0.1);
+        let safe_min = b_min.max(0.1);
+        let safe_max = b_max.max(safe_min + 0.1);
+        let br_norm = (safe_curr - safe_min) / (safe_max - safe_min);
 
         // 2. Compute Trends
         let (d_nfr, d_rtt, d_mcs) = if let Some((p_nfr, p_rtt, p_mcs)) = self.prev_norm_vals {

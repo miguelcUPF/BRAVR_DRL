@@ -354,16 +354,14 @@ impl BitrateManager {
         ladder_len: usize,
         shielding: bool,
     ) -> Vec<bool> {
-        let mut mask = vec![false; ladder_len];
+        // 0 = Decrease, 1 = Hold, 2 = Increase
+        let mut mask = vec![true, true, true];
 
-        // RULE 1: Neighbor Masking
-        // Allow current, current-1, current+1
-        let step_limit = 1;
-        let start = current_idx.saturating_sub(step_limit);
-        let end = (current_idx + step_limit).min(ladder_len - 1);
-
-        for i in start..=end {
-            mask[i] = true;
+        // Rule 1: Physical boundaries (cannot go below minimum or above maximum)
+        if current_idx == 0 {
+            mask[0] = false;
+        } else if current_idx == ladder_len - 1 {
+            mask[2] = false;
         }
 
         // RULE 2: Safety Shielding
@@ -372,11 +370,8 @@ impl BitrateManager {
                 snap.rtt_ms > env.cfg.rtt_max_ms || (1.0 - snap.nfr > env.cfg.nfr_deficit_max);
 
             if is_emergency {
-                // Strictly forbid indices higher than current
-                // This turns the window from [n-1, n, n+1] into [n-1, n]
-                for i in (current_idx + 1)..ladder_len {
-                    mask[i] = false;
-                }
+                // Strictly forbid increase
+                mask[2] = false;
             }
         }
 
@@ -508,7 +503,6 @@ impl BitrateManager {
                         epsilon: agent_config.epsilon,
                         state_dim,
                         hidden_dim: agent_config.hidden_dim as i64,
-                        action_dim: bitrate_levels_mbps.len() as i64,
                         action_shielding_enabled: agent_config.action_shielding_enabled,
                         ap_info_enabled: agent_config.ap_info_enabled,
                         model_path: model_path_buf,
@@ -870,12 +864,18 @@ impl BitrateManager {
                         let (a_t_idx, q_values, action_probs, policy_entropy, matches_argmax) =
                             agent.select_action(&s_t, &action_mask);
                         // Perform SARSA update (s_{t-1}, a_{t-1}, r_{t-1}, s_t, a_t)
-                        let td_error = agent.update(reward, &s_t, a_t_idx, &action_mask);
+                        let td_error = agent.update(reward, &s_t, a_t_idx);
 
                         // 5. Apply action
-                        let next_bitrate_idx = (a_t_idx as usize).clamp(0, ladder_len - 1);
-
-                        let new_bitrate_bps = env.cfg.bitrate_levels_mbps[next_bitrate_idx] * 1e6;
+                        let next_bitrate_idx = match a_t_idx {
+                            0 => current_bitrate_idx.saturating_sub(1),
+                            1 => current_bitrate_idx,
+                            2 => (current_bitrate_idx + 1),
+                            _ => current_bitrate_idx,
+                        };
+                        let new_bitrate_bps = env.cfg.bitrate_levels_mbps
+                            [next_bitrate_idx.clamp(0, ladder_len - 1)]
+                            * 1e6;
 
                         // 6. Stats
                         let sarsa_stats = SARSAStats {

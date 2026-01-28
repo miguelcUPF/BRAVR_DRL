@@ -3,6 +3,8 @@ use rand::{distributions::Distribution, distributions::WeightedIndex, thread_rng
 use std::{collections::VecDeque, path::PathBuf};
 use tch::{nn, nn::Module, nn::OptimizerConfig, Kind, Tensor};
 
+const N_ACTIONS: i64 = 3; // -1 = decrease, 0 = hold, 1 = increase
+
 #[derive(Clone, Debug)]
 pub struct SarsaAgentConfig {
     // Learning Hyperparameters
@@ -16,7 +18,6 @@ pub struct SarsaAgentConfig {
     // Neural Network Architecture
     pub state_dim: i64,
     pub hidden_dim: i64,
-    pub action_dim: i64,
 
     // Action Shielding
     pub action_shielding_enabled: bool,
@@ -73,7 +74,7 @@ impl SarsaAgent {
         let mut vs = nn::VarStore::new(device);
         let net = Self::build_net(&vs.root(), &cfg);
 
-        // Force the network to output high Q-values initially
+        // Force the network to output similar Q-values initially
         tch::no_grad(|| {
             let mut vars = vs.variables();
 
@@ -156,7 +157,7 @@ impl SarsaAgent {
             .add(nn::linear(
                 p / "out",
                 cfg.hidden_dim,
-                cfg.action_dim,
+                N_ACTIONS,
                 Default::default(),
             ))
     }
@@ -175,8 +176,6 @@ impl SarsaAgent {
             // Forward pass through Main Network
             let q_values = self.net.forward(&s); // Output shape: [1, 3]
             let q_vec: Vec<f32> = Vec::try_from(q_values.view([-1])).unwrap();
-
-            let n_actions = q_vec.len();
 
             // Boltzmann distribution calculation
             // P(a) = exp(Q(s,a) / T) / sum(exp(Q(s,a) / T))
@@ -198,7 +197,10 @@ impl SarsaAgent {
             let mut probs: Vec<f32> = if sum > 1e-9 {
                 exp.iter().map(|v| v / sum).collect()
             } else {
-                vec![1.0 / n_actions as f32; n_actions as usize]
+                // FALLBACK: If everything is masked or broken, default to "Hold" (index 1)
+                let mut fallback = vec![0.0; N_ACTIONS as usize];
+                fallback[1] = 1.0;
+                fallback
             };
 
             // Ensure minimum exploration (among allowed actions)
@@ -245,7 +247,7 @@ impl SarsaAgent {
     /// G = R_{t-N+1} + gamma*R_{t-N+2} + ... + gamma^N * V_expected(s_{t+1})
     ///
     /// Returns: TD Error (scalar)
-    pub fn update(&mut self, r_t: f32, s_t: &Tensor, a_t_idx: i64, mask_next: &[bool]) -> f32 {
+    pub fn update(&mut self, r_t: f32, s_t: &Tensor, a_t_idx: i64) -> f32 {
         let mut td_error = 0.0;
         if let (Some(last_s), Some(last_a)) = (&self.s_prev, self.a_prev_idx) {
             // Push transition: (S_{t-1}, A_{t-1}, R_t)
@@ -257,7 +259,7 @@ impl SarsaAgent {
 
             // If buffer is full enough (warmup), learn
             if self.buffer.len() >= self.cfg.n_step {
-                td_error = self.learn_from_buffer(s_t, mask_next);
+                td_error = self.learn_from_buffer(s_t);
             }
         }
 
@@ -268,7 +270,7 @@ impl SarsaAgent {
         td_error
     }
 
-    fn learn_from_buffer(&mut self, s_next: &Tensor, mask_next: &[bool]) -> f32 {
+    fn learn_from_buffer(&mut self, s_next: &Tensor) -> f32 {
         let oldest = self.buffer.pop_front().unwrap();
         let s_old = oldest.s.view([1, -1]).to_device(self.device);
         let a_old_idx = Tensor::from_slice(&[oldest.a_idx])
@@ -289,63 +291,29 @@ impl SarsaAgent {
         let final_gamma = discount * self.cfg.gamma;
 
         let v_expected = tch::no_grad(|| {
-            // A. Get Q-values from BOTH networks
-            // Main Net determines the POLICY (probabilities)
             let q_main_vals = self.net.forward(&s_bootstrap);
             let q_main_vec: Vec<f32> = Vec::try_from(q_main_vals.view([-1])).unwrap();
 
-            // Target Net determines the VALUE (evaluation)
             let q_target_vals = self.target_net.forward(&s_bootstrap);
             let q_target_vec: Vec<f32> = Vec::try_from(q_target_vals.view([-1])).unwrap();
 
-            // B. Find Max Q on MAIN NET (for numerical stability of Softmax)
-            // We strictly ignore forbidden actions here.
-            let mut max_q_main = f32::NEG_INFINITY;
-            let mut valid_indices = Vec::new();
-
-            for (i, &is_allowed) in mask_next.iter().enumerate() {
-                if is_allowed {
-                    valid_indices.push(i);
-                    if q_main_vec[i] > max_q_main {
-                        max_q_main = q_main_vec[i];
-                    }
-                }
-            }
-
-            // Safety check for empty mask
-            if valid_indices.is_empty() {
-                return 0.0;
-            }
-
-            // C. Calculate Boltzmann Probabilities using MAIN NET values
+            // Calculate Boltzmann across ALL actions so value can propagate
             let temp = self.cfg.temperature.max(1e-6) as f32;
-            let mut sum_exp = 0.0;
-            let mut probs = vec![0.0; q_main_vec.len()];
+            let max_q = q_main_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
-            for &i in &valid_indices {
-                // Subtract max_q_main to prevent overflow
-                let val = ((q_main_vec[i] - max_q_main) / temp).exp();
-                probs[i] = val;
+            let mut sum_exp = 0.0;
+            let mut exps = vec![0.0; q_main_vec.len()];
+            for i in 0..q_main_vec.len() {
+                let val = ((q_main_vec[i] - max_q) / temp).exp();
+                exps[i] = val;
                 sum_exp += val;
             }
 
-            // D. Compute Expected Value using TARGET NET values
-            // V = Sum( Prob_main[a] * Q_target[a] )
             let mut expected_val = 0.0;
-            if sum_exp > 1e-9 {
-                for &i in &valid_indices {
-                    let p = probs[i] / sum_exp; // Normalize
-                    expected_val += p * q_target_vec[i]; // Weighted sum of Target Qs
-                }
-            } else {
-                // Fallback: Uniform average over valid actions
-                let count = valid_indices.len() as f32;
-                for &i in &valid_indices {
-                    expected_val += q_target_vec[i];
-                }
-                expected_val /= count;
+            for i in 0..q_main_vec.len() {
+                let p = exps[i] / sum_exp;
+                expected_val += p * q_target_vec[i];
             }
-
             expected_val
         });
         g += final_gamma * v_expected;
