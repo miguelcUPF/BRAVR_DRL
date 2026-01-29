@@ -711,12 +711,12 @@ impl StatisticsTab {
             Color32::LIGHT_GREEN,  // bitrate
             Color32::LIGHT_RED,    // NFR
             Color32::LIGHT_YELLOW, // RTT
-            Color32::LIGHT_BLUE,   // volatility
+            Color32::LIGHT_BLUE,   // Switching
             Color32::LIGHT_GRAY,   // fairness
         ];
 
         // Labels for display in tooltip
-        let labels = vec!["Bitrate", "NFR", "RTT", "Volatility", "Fairness"];
+        let labels = vec!["Bitrate", "NFR", "RTT", "Switching", "Fairness"];
 
         let mut all_values = Vec::new();
         for snap in &self.history_sarsa {

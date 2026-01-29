@@ -22,7 +22,7 @@ pub struct LearningConfig {
     pub w_bitrate: f32,
     pub w_nfr: f32,
     pub w_rtt: f32,
-    pub w_osc: f32,
+    pub w_switch: f32,
     pub w_fairness: f32,
 }
 
@@ -41,7 +41,7 @@ impl Default for LearningConfig {
             w_bitrate: 1.0,
             w_nfr: 0.5,
             w_rtt: 3.0,
-            w_osc: 0.05,
+            w_switch: 0.05,
             w_fairness: 0.5,
         }
     }
@@ -58,7 +58,7 @@ impl LearningConfig {
         w_bitrate: f32,
         w_nfr: f32,
         w_rtt: f32,
-        w_osc: f32,
+        w_switch: f32,
         w_fairness: f32,
     ) -> Self {
         Self {
@@ -71,7 +71,7 @@ impl LearningConfig {
             w_bitrate,
             w_nfr,
             w_rtt,
-            w_osc,
+            w_switch,
             w_fairness,
         }
     }
@@ -180,10 +180,7 @@ impl StreamingEnvironment {
         let safe_min = b_min.max(0.1);
         let safe_max = b_max.max(safe_min + 0.1); // Ensure max > min
 
-        let numerator = (safe_curr / safe_min).ln();
-        let denominator = (safe_max / safe_min).ln();
-
-        let br_utility = numerator / denominator;
+        let br_utility = (safe_curr - safe_min) / (safe_max - safe_min).max(0.1);
 
         // 2. NFR Penalty
         let nfr_deficit = (self.cfg.nfr_target - snap.nfr).max(0.0);
@@ -193,23 +190,14 @@ impl StreamingEnvironment {
         let rtt_excess_ms = (snap.rtt_ms - self.cfg.rtt_target_ms).max(0.0);
         let rtt_penalty = rtt_excess_ms / 100.0;
 
-        // 4. Oscillation Penalty
-        let mut osc_penalty = 0.0;
-        let mut current_dir = 0;
-
+        // 4. Switch Penalty
+        let mut switch_penalty = 0.0;
         if let Some(prev_idx) = self.prev_bitrate_idx {
-            if snap.bitrate_idx > prev_idx {
-                current_dir = 1;
-            } else if snap.bitrate_idx < prev_idx {
-                current_dir = -1;
-            }
-
-            // Check Zig-Zag Trend
-            if current_dir != 0 {
-                if current_dir == -self.last_move_dir {
-                    osc_penalty = 1.0;
-                }
-                self.last_move_dir = current_dir;
+            if snap.bitrate_idx != prev_idx {
+                switch_penalty = 1.0;
+                self.last_move_dir = if snap.bitrate_idx > prev_idx { 1 } else { -1 };
+            } else {
+                self.last_move_dir = 0;
             }
         }
         self.prev_bitrate_idx = Some(snap.bitrate_idx);
@@ -224,7 +212,7 @@ impl StreamingEnvironment {
         let reward = (self.cfg.w_bitrate * (br_utility - 1.0))
             - (self.cfg.w_nfr * nfr_penalty)
             - (self.cfg.w_rtt * rtt_penalty)
-            - (self.cfg.w_osc * osc_penalty)
+            - (self.cfg.w_switch * switch_penalty)
             - (self.cfg.w_fairness * fairness_penalty);
 
         (
@@ -233,7 +221,7 @@ impl StreamingEnvironment {
                 self.cfg.w_bitrate * (br_utility - 1.0),
                 -self.cfg.w_nfr * nfr_penalty,
                 -self.cfg.w_rtt * rtt_penalty,
-                -self.cfg.w_osc * osc_penalty,
+                -self.cfg.w_switch * switch_penalty,
                 -self.cfg.w_fairness * fairness_penalty,
             ],
         )

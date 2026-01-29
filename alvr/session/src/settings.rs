@@ -625,12 +625,12 @@ pub enum BitrateMode {
         w_rtt: f32,
 
         #[schema(strings(
-            display_name = "Reward: oscillations weight",
-            help = "Importance of avoiding action direction changes. Controls the penalty applied for each oscillation in the action direction."
+            display_name = "Reward: switching weight",
+            help = "Importance of avoiding bitrate changes. Controls the penalty applied whenever the agent moves to a different bitrate level to prevent frequent quality oscillations."
         ))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.0, max = 5.0, logarithmic)))]
-        w_osc: f32,
+        w_switch: f32,
 
         #[schema(strings(
             display_name = "Reward: airtime fairness weight",
@@ -1629,7 +1629,7 @@ pub fn session_settings_default() -> SettingsDefault {
                         w_bitrate: 1.0,
                         w_nfr: 0.5,
                         w_rtt: 3.0,
-                        w_osc: 0.05,
+                        w_switch: 0.01,
                         w_fairness: 0.0,
                         agent_config: SARSAConfigDefault {
                             load_model: false,

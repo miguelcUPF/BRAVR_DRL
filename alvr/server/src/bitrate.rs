@@ -467,7 +467,7 @@ impl BitrateManager {
                     w_bitrate,
                     w_nfr,
                     w_rtt,
-                    w_osc,
+                    w_switch,
                     w_fairness,
                     agent_config,
                     ..
@@ -487,7 +487,7 @@ impl BitrateManager {
                         *w_bitrate,
                         *w_nfr,
                         *w_rtt,
-                        *w_osc,
+                        *w_switch,
                         *w_fairness,
                     );
                     self.env = Some(StreamingEnvironment::new(env_config));
