@@ -146,14 +146,14 @@ impl SarsaAgent {
                 cfg.hidden_dim,
                 Default::default(),
             ))
-            .add_fn(|x| x.relu())
+            .add_fn(|x| x.leaky_relu())
             .add(nn::linear(
                 p / "l2",
                 cfg.hidden_dim,
                 cfg.hidden_dim,
                 Default::default(),
             ))
-            .add_fn(|x| x.relu())
+            .add_fn(|x| x.leaky_relu())
             .add(nn::linear(
                 p / "out",
                 cfg.hidden_dim,
@@ -162,12 +162,60 @@ impl SarsaAgent {
             ))
     }
 
+    fn policy_probs(&self, q: &[f32], mask: &[bool]) -> Vec<f32> {
+        // Boltzmann distribution calculation
+        // P(a) = exp(Q(s,a) / T) / sum(exp(Q(s,a) / T))
+        let temp = self.cfg.temperature.max(1e-6) as f32;
+
+        let max_q = q
+            .iter()
+            .zip(mask)
+            .filter(|(_, &m)| m)
+            .map(|(v, _)| *v)
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        let mut exp = vec![0.0; q.len()];
+        let mut sum = 0.0;
+
+        for i in 0..q.len() {
+            if mask[i] {
+                let v = ((q[i] - max_q) / temp).exp();
+                exp[i] = v;
+                sum += v;
+            }
+        }
+
+        if sum < 1e-9 {
+            let valid = mask.iter().filter(|&&b| b).count().max(1) as f32;
+            return mask
+                .iter()
+                .map(|&m| if m { 1.0 / valid } else { 0.0 })
+                .collect();
+        }
+
+        let mut probs: Vec<f32> = exp.iter().map(|v| v / sum).collect();
+
+        // ε-mixing (to ensure a minimum exploration among valid actions)
+        let eps = self.cfg.epsilon as f32;
+        let valid = mask.iter().filter(|&&b| b).count().max(1) as f32;
+        // P = (1 - eps) * P_boltzmann + eps * P_uniform
+        for i in 0..probs.len() {
+            if mask[i] {
+                probs[i] = (1.0 - eps) * probs[i] + eps / valid;
+            } else {
+                probs[i] = 0.0;
+            }
+        }
+
+        probs
+    }
+
     /// Select action using Boltzmann (Softmax) exploration with masking and epsilon floor.
     /// Returns: (selected_idx, q_values, probabilities, entropy, is_greedy)
     pub fn select_action(
         &self,
         s_t: &Tensor,
-        mask: &[bool],
+        mask_t: &[bool],
     ) -> (i64, Vec<f32>, Vec<f32>, f32, bool) {
         let s = s_t.to_device(self.device);
 
@@ -177,45 +225,8 @@ impl SarsaAgent {
             let q_values = self.net.forward(&s); // Output shape: [1, 3]
             let q_vec: Vec<f32> = Vec::try_from(q_values.view([-1])).unwrap();
 
-            // Boltzmann distribution calculation
-            // P(a) = exp(Q(s,a) / T) / sum(exp(Q(s,a) / T))
-            let temp = self.cfg.temperature.max(1e-6) as f32;
-            let max_q = q_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            let mut exp: Vec<f32> = q_vec.iter().map(|q| ((q - max_q) / temp).exp()).collect(); // subtract max for numerical stability
-
-            // Apply mask (if an action is forbidden, set its probability weight to 0)
-            for (i, is_allowed) in mask.iter().enumerate() {
-                if !*is_allowed {
-                    exp[i] = 0.0;
-                }
-            }
-
-            // Sum probabilities
-            let sum: f32 = exp.iter().sum();
-
-            // Normalize to get probabilities with safety check (if sum == 0, return uniform distribution)
-            let mut probs: Vec<f32> = if sum > 1e-9 {
-                exp.iter().map(|v| v / sum).collect()
-            } else {
-                // FALLBACK: If everything is masked or broken, default to "Hold" (index 1)
-                let mut fallback = vec![0.0; N_ACTIONS as usize];
-                fallback[1] = 1.0;
-                fallback
-            };
-
-            // Ensure minimum exploration (among allowed actions)
-            let valid_count = mask.iter().filter(|&&b| b).count().max(1) as f32;
-            let epsilon = self.cfg.epsilon as f32;
-            // P_final = (1 - eps) * P_boltzmann + eps * P_uniform
-            let mut mixed_probs: Vec<f32> = Vec::new();
-            for (i, p) in probs.iter().enumerate() {
-                if mask[i] {
-                    mixed_probs.push((1.0 - epsilon) * p + epsilon / valid_count);
-                } else {
-                    mixed_probs.push(0.0);
-                }
-            }
-            probs = mixed_probs;
+            // Calculate policy probabilities
+            let probs = self.policy_probs(&q_vec, mask_t);
 
             // Sample action from the probability distribution
             let dist = WeightedIndex::new(&probs).unwrap();
@@ -246,20 +257,26 @@ impl SarsaAgent {
     /// We want to update Q(s_{t-N}, a_{t-N}) towards the N-step target G.
     /// G = R_{t-N+1} + gamma*R_{t-N+2} + ... + gamma^N * V_expected(s_{t+1})
     ///
-    /// Returns: TD Error (scalar)
-    pub fn update(&mut self, r_t: f32, s_t: &Tensor, a_t_idx: i64) -> f32 {
+    /// # parameters
+    /// * `s_t`: The state the agent just arrived at (S_t).
+    /// * `a_t_idx`: The action the agent just took at S_t (A_t).
+    /// * `r_t`: The reward received for the transition to S_t (R_t).
+    /// * `mask_t`: Valid actions available at S_t.
+    ///
+    /// Returns: TD Error of the updated state (if an update occurred), else 0.0.
+    pub fn update(&mut self, s_t: &Tensor, a_t_idx: i64, r_t: f32, mask_t: &[bool]) -> f32 {
         let mut td_error = 0.0;
-        if let (Some(last_s), Some(last_a)) = (&self.s_prev, self.a_prev_idx) {
-            // Push transition: (S_{t-1}, A_{t-1}, R_t)
+        if let (Some(s_prev), Some(a_prev_idx)) = (&self.s_prev, self.a_prev_idx) {
+            // 1. Store transition: (S_{t-1}, A_{t-1}, R_t)
             self.buffer.push_back(Transition {
-                s: last_s.shallow_clone(),
-                a_idx: last_a,
+                s: s_prev.shallow_clone(),
+                a_idx: a_prev_idx,
                 r: r_t,
             });
 
-            // If buffer is full enough (warmup), learn
+            // 2. If buffer is full (N-steps stored), update the oldest state (S_{t-N})
             if self.buffer.len() >= self.cfg.n_step {
-                td_error = self.learn_from_buffer(s_t);
+                td_error = self.perform_n_step_learning(s_t, mask_t);
             }
         }
 
@@ -270,58 +287,55 @@ impl SarsaAgent {
         td_error
     }
 
-    fn learn_from_buffer(&mut self, s_next: &Tensor) -> f32 {
-        let oldest = self.buffer.pop_front().unwrap();
-        let s_old = oldest.s.view([1, -1]).to_device(self.device);
-        let a_old_idx = Tensor::from_slice(&[oldest.a_idx])
+    fn perform_n_step_learning(&mut self, s_bootstrap: &Tensor, mask_bootstrap: &[bool]) -> f32 {
+        // 1. Retrieve the state we want to UPDATE (S_{t-N})
+        let oldest_trans = self.buffer.pop_front().unwrap();
+        let s_old = oldest_trans.s.view([1, -1]).to_device(self.device);
+        let a_old_idx = Tensor::from_slice(&[oldest_trans.a_idx])
             .to_kind(Kind::Int64)
             .to_device(self.device)
             .view([1, 1]);
 
-        // Calculate the N-Step Return (G)
-        let mut g: f32 = oldest.r;
+        // 2. Calculate the N-Step Return (G)
+        // This is the sum of discounted rewards occurring between S_{t-N} and S_t.
+        // G = R_{t-N+1} + gamma * R_{t-N+2} + ...
+        let mut g: f32 = oldest_trans.r;
         let mut discount: f32 = 1.0;
         for trans in self.buffer.iter() {
             discount *= self.cfg.gamma;
             g += discount * trans.r;
         }
 
-        // Bootstrap: Calculate V(s_{t+1}) using MASKED probabilities
-        let s_bootstrap = s_next.view([1, -1]).to_device(self.device);
-        let final_gamma = discount * self.cfg.gamma;
+        // 3. Bootstrap: Estimate V(s_{t+1})
+        let bootstrap_discount = discount * self.cfg.gamma;
 
         let v_expected = tch::no_grad(|| {
-            let q_main_vals = self.net.forward(&s_bootstrap);
-            let q_main_vec: Vec<f32> = Vec::try_from(q_main_vals.view([-1])).unwrap();
+            let s_in = s_bootstrap.view([1, -1]).to_device(self.device);
 
-            let q_target_vals = self.target_net.forward(&s_bootstrap);
+            // A. Policy (Probability of taking actions at S_t) -> From Main Net
+            let q_main_vals = self.net.forward(&s_in);
+            let q_main_vec: Vec<f32> = Vec::try_from(q_main_vals.view([-1])).unwrap();
+            let probs = self.policy_probs(&q_main_vec, mask_bootstrap);
+
+            // B. Value (Expected return at S_t) -> From Target Net
+            let q_target_vals = self.target_net.forward(&s_in);
             let q_target_vec: Vec<f32> = Vec::try_from(q_target_vals.view([-1])).unwrap();
 
-            // Calculate Boltzmann across ALL actions so value can propagate
-            let temp = self.cfg.temperature.max(1e-6) as f32;
-            let max_q = q_main_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-
-            let mut sum_exp = 0.0;
-            let mut exps = vec![0.0; q_main_vec.len()];
-            for i in 0..q_main_vec.len() {
-                let val = ((q_main_vec[i] - max_q) / temp).exp();
-                exps[i] = val;
-                sum_exp += val;
-            }
-
-            let mut expected_val = 0.0;
-            for i in 0..q_main_vec.len() {
-                let p = exps[i] / sum_exp;
-                expected_val += p * q_target_vec[i];
-            }
-            expected_val
+            // C. Double Expected SARSA: Sum(Prob * Value)
+            probs
+                .iter()
+                .zip(q_target_vec.iter())
+                .map(|(p, q_val)| p * q_val)
+                .sum::<f32>()
         });
-        g += final_gamma * v_expected;
+        g += bootstrap_discount * v_expected;
 
-        // Compute Loss
+        // 4. Compute Loss & Update Network
         let target_val = Tensor::from(g).to_device(self.device);
-        let q_all = self.net.forward(&s_old);
-        let q_pred = q_all.gather(1, &a_old_idx, false);
+
+        let q_pred = self.net.forward(&s_old).gather(1, &a_old_idx, false);
+
+        // Huber Loss (Smooth L1)
         let loss = q_pred.smooth_l1_loss(&target_val, tch::Reduction::Mean, 1.0);
         let td_error = f32::try_from(&(&target_val - &q_pred).abs()).unwrap_or(0.0);
 
@@ -389,8 +403,14 @@ impl SarsaAgent {
         });
     }
 
+    pub fn finish_episode(&mut self) {
+        self.buffer.clear();
+        self.s_prev = None;
+        self.a_prev_idx = None;
+    }
+
     /// Saves the Main Network weights to disk
-    pub fn save_to_disk(&self) {
+    pub fn save_to_disk(&mut self) {
         if !self.cfg.save_model {
             return;
         }

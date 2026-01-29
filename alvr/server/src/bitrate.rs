@@ -864,7 +864,7 @@ impl BitrateManager {
                         let (a_t_idx, q_values, action_probs, policy_entropy, matches_argmax) =
                             agent.select_action(&s_t, &action_mask);
                         // Perform SARSA update (s_{t-1}, a_{t-1}, r_{t-1}, s_t, a_t)
-                        let td_error = agent.update(reward, &s_t, a_t_idx);
+                        let td_error = agent.update(&s_t, a_t_idx, reward, &action_mask);
 
                         // 5. Apply action
                         let next_bitrate_idx = match a_t_idx {
@@ -929,9 +929,10 @@ impl BitrateManager {
         )
     }
 
-    pub fn save_sarsa_model(&self) {
-        if let Some(agent) = &self.sarsa_agent {
-            info!("SARSA: Saving model on disconnect...");
+    pub fn save_sarsa_model(&mut self) {
+        if let Some(agent) = self.sarsa_agent.as_mut() {
+            agent.finish_episode();
+            info!("SARSA: Saving model on disconnect (if enabled)...");
             agent.save_to_disk();
         }
     }
@@ -949,8 +950,9 @@ impl BitrateManager {
 
 impl Drop for BitrateManager {
     fn drop(&mut self) {
-        if let Some(agent) = &self.sarsa_agent {
-            info!("SARSA: BitrateManager dropping. Saving model...");
+        if let Some(agent) = self.sarsa_agent.as_mut() {
+            agent.finish_episode();
+            info!("SARSA: BitrateManager dropping. Saving model (if enabled)...");
             agent.save_to_disk();
         }
     }
