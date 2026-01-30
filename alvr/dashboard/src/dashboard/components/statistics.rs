@@ -500,7 +500,7 @@ impl StatisticsTab {
 
                 draw_lines(painter, points, Color32::RED);
             },
-            |ui, stats, prev| {
+            |ui, stats, _prev| {
                 ui.colored_label(
                     Color32::RED,
                     format!("|TD error|: {:.4}", stats.td_error.abs()),
@@ -540,7 +540,7 @@ impl StatisticsTab {
 
                 draw_lines(painter, points, Color32::LIGHT_BLUE);
             },
-            |ui, stats, prev| {
+            |ui, stats, _prev| {
                 ui.colored_label(
                     Color32::LIGHT_BLUE,
                     format!("Entropy: {:.3}", stats.policy_entropy),
@@ -590,7 +590,7 @@ impl StatisticsTab {
                     draw_lines(painter, points, color);
                 }
             },
-            |ui, stats, prev| {
+            |ui, stats, _prev| {
                 ui.label("Q-values:");
                 for (i, q) in stats.q_values.iter().enumerate() {
                     let color = Color32::from_rgb(
@@ -635,7 +635,7 @@ impl StatisticsTab {
                     draw_lines(painter, points, color);
                 }
             },
-            |ui, stats, prev| {
+            |ui, stats, _prev| {
                 ui.label("Action probabilities:");
                 for (i, p) in stats.action_probs.iter().enumerate() {
                     let color = Color32::from_rgb(
@@ -760,7 +760,7 @@ impl StatisticsTab {
                     }
                 }
             },
-            move |ui, stats, prev| {
+            move |ui, stats, _prev| {
                 for (idx, val) in stats.r_components.iter().enumerate() {
                     let color = colors_tooltip[idx % colors_tooltip.len()];
                     ui.colored_label(color, format!("{}: {:+.4}", labels_tooltip[idx], val));
