@@ -225,6 +225,11 @@ impl SarsaAgent {
             let q_values = self.net.forward(&s); // Output shape: [1, 3]
             let q_vec: Vec<f32> = Vec::try_from(q_values.view([-1])).unwrap();
 
+            if q_vec.iter().any(|x| x.is_nan()) {
+                warn!("SARSA: Network output contains NaN! q_vec: {:?}", q_vec);
+                return (1, vec![0.0; 3], vec![0.0, 1.0, 0.0], 0.0, false);
+            }
+
             // Calculate policy probabilities
             let probs = self.policy_probs(&q_vec, mask_t);
 
@@ -342,45 +347,16 @@ impl SarsaAgent {
         // Backprop
         self.opt.zero_grad();
         loss.backward();
-        self.manual_clip_grad_norm(1.0);
+
+        // Gradient Clipping
+        self.opt.clip_grad_norm(1.0);
+
         self.opt.step();
 
         // Update Target
         self.soft_update_target();
 
         td_error
-    }
-
-    /// Manual Gradient Clipping (L2 Norm)
-    /// Prevents the updates from becoming too large and destabilizing the network.
-    fn manual_clip_grad_norm(&self, max_norm: f64) {
-        let vs = &self.vs;
-        tch::no_grad(|| {
-            let variables = vs.trainable_variables();
-            let mut total_norm_sq = 0f64;
-
-            // Calculate global norm
-            for var in &variables {
-                let grad = var.grad();
-                if grad.defined() {
-                    let grad_norm: f64 = grad.norm().double_value(&[]);
-                    total_norm_sq += grad_norm * grad_norm;
-                }
-            }
-
-            let total_norm = total_norm_sq.sqrt();
-            let clip_coef = (max_norm / (total_norm + 1e-6)).min(1.0);
-
-            // Apply clipping if necessary
-            if clip_coef < 1.0 {
-                for var in &variables {
-                    let mut grad = var.grad();
-                    if grad.defined() {
-                        let _ = grad.f_mul_scalar_(clip_coef);
-                    }
-                }
-            }
-        });
     }
 
     /// Polyak Averaging for Target Network
