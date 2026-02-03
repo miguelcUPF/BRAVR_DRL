@@ -281,6 +281,7 @@ impl StatisticsTab {
                     self.draw_ap_clients_airtime_graph(ui, available_width);
                     self.draw_ap_interface_channel_activity_graph(ui, available_width);
                     self.draw_ap_clients_count_graph(ui, available_width);
+                    self.draw_ap_client_rssi_graph(ui, available_width);
                     self.draw_bulk_ap_graphs(ui, available_width);
                     self.draw_ap_info_message(ui);
                     ui.separator();
@@ -1151,6 +1152,36 @@ impl StatisticsTab {
                         "Noise: {} dBm",
                         client.noise_dbm.map_or("N/A".to_string(), |v| v.to_string())
                     ));
+                }
+            }
+        }
+    );
+
+    make_ap_series_graph!(
+        fn draw_ap_client_rssi_graph(self, ui, width),
+        title = "Client RSSI (dBm)",
+        yrange = -100.0..=0.0,
+
+        series = {
+            "signal_dbm" => |_iface: &Interface, client: Option<&Client>| {
+                client
+                    .and_then(|c| c.signal_dbm.map(|v| v as f32))
+                    .unwrap_or(f32::NAN)
+            }
+        },
+
+        tooltip = |tui, stats| {
+            let (iface_opt, client_opt) = find_client_interface(stats, self.client_ip.unwrap());
+            if let Some(_iface) = iface_opt {
+                if let Some(client) = client_opt {
+                    tui.colored_label(
+                        series_color("signal_dbm"),
+                        format!(
+                            "Signal: {} dBm",
+                            client.signal_dbm
+                                .map_or("N/A".to_string(), |v| v.to_string())
+                        )
+                    );
                 }
             }
         }
