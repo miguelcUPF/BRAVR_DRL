@@ -245,12 +245,12 @@ impl SarsaAgent {
                 .sum::<f32>();
 
             // Identify the greedy action (argmax) for logging purposes
-            let argmax_idx = q_vec
+            let argmax_idx = probs
                 .iter()
                 .enumerate()
                 .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                .map(|(i, _)| i)
-                .unwrap_or(usize::MAX) as i64;
+                .map(|(i, _)| i as i64)
+                .unwrap_or(1);
 
             (idx, q_vec, probs, entropy, idx == argmax_idx)
         })
