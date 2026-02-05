@@ -1,11 +1,13 @@
 use crate::{
     ap_telemetry::{WifiMetrics, WifiStatsProcessor},
-    learning_env::{EnvironmentSnapshot, LearningConfig, StreamingEnvironment, STATE_DIM},
+    learning_env::{LearningConfig, StreamingEnvironment, STATE_DIM},
     sarsa_agent::{SarsaAgent, SarsaAgentConfig},
     FfiDynamicEncoderParams, FILESYSTEM_LAYOUT,
 };
 use alvr_common::{info, APStats, SlidingWindowAverage};
-use alvr_events::{EventType, HeuristicStats, NominalBitrateStats, SARSAStats};
+use alvr_events::{
+    EnvironmentSnapshot, EventType, HeuristicStats, NominalBitrateStats, SARSAStats,
+};
 use alvr_session::{
     get_profile_config, settings_schema::Switch, AveragingStrategy, BitrateAdaptiveFramerateConfig,
     BitrateConfig, BitrateMode, WindowType,
@@ -292,31 +294,27 @@ impl BitrateManager {
     }
 
     fn get_interval_rtt_ms_stats(&self) -> (f32, f32) {
-        // Returns (Mean, StdDev)
-        if self.rtt_samples_s.is_empty() {
+        // Returns (Mean, Max)
+        let mut sum = 0.0f32;
+        let mut max = 0.0f32;
+        let mut count = 0u32;
+
+        for &rtt in &self.rtt_samples_s {
+            if !rtt.is_finite() {
+                continue;
+            }
+
+            sum += rtt;
+            max = max.max(rtt);
+            count += 1;
+        }
+
+        if count == 0 {
             return (0.0, 0.0);
         }
 
-        let count = self.rtt_samples_s.len() as f32;
-
-        // 1. Mean
-        let sum: f32 = self.rtt_samples_s.iter().sum();
-        let mean = sum / count;
-
-        // 2. Standard Deviation
-        let variance: f32 = self
-            .rtt_samples_s
-            .iter()
-            .map(|&val| {
-                let diff = mean - val;
-                diff * diff
-            })
-            .sum::<f32>()
-            / count;
-        let std_dev = variance.sqrt();
-
-        // Return in ms
-        (mean * 1000.0, std_dev * 1000.0)
+        let mean = sum / count as f32;
+        (mean * 1000.0, max * 1000.0)
     }
 
     fn get_interval_nfr(&self) -> f32 {
@@ -333,8 +331,17 @@ impl BitrateManager {
         let sum_rx: f32 = self.frame_interarrival_samples_s.iter().sum();
         let fps_rx = count_rx / sum_rx;
 
+        // Safety check: if there is little transmitted data, do not judge the network
+        if sum_tx < 0.2 * self.update_interval_s.as_secs_f32() {
+            return 1.0;
+        }
+        // Safety check: if there is little reception data, assume bad network and return 0
+        if sum_rx < 0.2 * self.update_interval_s.as_secs_f32() {
+            return 0.0;
+        }
+
         if fps_tx > 0.0 {
-            fps_rx / fps_tx
+            (fps_rx / fps_tx).clamp(0.0, 3.0)
         } else {
             0.0
         }
@@ -366,8 +373,8 @@ impl BitrateManager {
 
         // RULE 2: Safety Shielding
         if shielding {
-            let is_emergency =
-                snap.rtt_ms > env.cfg.rtt_max_ms || (1.0 - snap.nfr > env.cfg.nfr_deficit_max);
+            let is_emergency = snap.rtt_ms > env.cfg.rtt_target_ms + env.cfg.rtt_tolerance_ms
+                || snap.nfr < env.cfg.nfr_target - env.cfg.nfr_tolerance;
 
             if is_emergency {
                 // Strictly forbid increase
@@ -460,15 +467,15 @@ impl BitrateManager {
                     update_interval_s,
                     bitrate_levels_mbps,
                     nfr_target,
-                    nfr_deficit_max,
+                    nfr_tolerance,
                     rtt_target_ms,
-                    rtt_max_ms,
-                    rtt_state_scale_ms,
+                    rtt_tolerance_ms,
                     w_bitrate,
                     w_nfr,
                     w_rtt,
                     w_switch,
                     w_fairness,
+                    use_log_bitrate,
                     agent_config,
                     ..
                 } => {
@@ -480,15 +487,15 @@ impl BitrateManager {
                     let env_config = LearningConfig::new(
                         bitrate_levels_mbps.clone(),
                         *nfr_target,
-                        *nfr_deficit_max,
+                        *nfr_tolerance,
                         *rtt_target_ms,
-                        *rtt_max_ms,
-                        *rtt_state_scale_ms,
+                        *rtt_tolerance_ms,
                         *w_bitrate,
                         *w_nfr,
                         *w_rtt,
                         *w_switch,
                         *w_fairness,
+                        *use_log_bitrate,
                     );
                     self.env = Some(StreamingEnvironment::new(env_config));
 
@@ -554,6 +561,31 @@ impl BitrateManager {
 
         self.last_update_instant = now;
         self.update_needed = false;
+
+        // Interval Averages (raw data between decisions)
+        let (rtt_ms, rtt_max_ms) = self.get_interval_rtt_ms_stats();
+        let nfr = self.get_interval_nfr();
+        let actual_throughput_bps = self.get_interval_throughput_bps();
+        let wifi_metrics_raw = self.wifi_processor.process(&self.ap_stats_buffer);
+
+        // Build Snapshot
+        let raw_snap = EnvironmentSnapshot {
+            bitrate_idx: None,
+            bitrate_bps: self.last_target_bitrate_bps,
+            nfr,
+            rtt_ms,
+            rtt_max_ms,
+            actual_throughput_bps,
+            mcs_raw: wifi_metrics_raw.mcs_raw,
+            channel_busy_pct: wifi_metrics_raw.channel_busy_pct,
+            tx_retry_rate: wifi_metrics_raw.tx_retry_rate,
+            my_airtime_fraction: wifi_metrics_raw.my_airtime_fraction,
+            active_vr_count: wifi_metrics_raw.active_vr_count,
+            fairness_index: wifi_metrics_raw.fairness_index,
+        };
+
+        // Environment snapshot is always logged for debugging
+        alvr_events::send_event(EventType::EnvironmentSnapshot(raw_snap.clone()));
 
         let mut stats = NominalBitrateStats::default();
 
@@ -796,108 +828,97 @@ impl BitrateManager {
             }
             BitrateMode::Sarsa { .. } => {
                 if self.sarsa_learning_enabled {
-                    // 1. Calculate Interval Averages (Raw data between decisions)
-                    let (rtt_ms, rtt_std_dev_ms) = self.get_interval_rtt_ms_stats();
-                    let nfr = self.get_interval_nfr();
-                    let actual_throughput_bps = self.get_interval_throughput_bps();
-                    let mut wifi_metrics = self.wifi_processor.process(&self.ap_stats_buffer);
-                    if let (Some(agent), Some(env)) = (&mut self.sarsa_agent, &mut self.env) {
-                        if !agent.cfg.ap_info_enabled {
-                            wifi_metrics = WifiMetrics::default();
-                        }
-                        // 2. Find current bitrate index
-                        let bitrate_bps = self.last_target_bitrate_bps;
-                        let current_bitrate_mbps = bitrate_bps / 1e6;
-                        let current_bitrate_idx = env
-                            .cfg
-                            .bitrate_levels_mbps
-                            .iter()
-                            .position(|&b| (b as f32 - current_bitrate_mbps as f32).abs() < 0.1)
-                            .unwrap_or(0);
-
-                        // 3. Build Snapshot
-                        let snapshot = EnvironmentSnapshot {
-                            nfr,
-                            rtt_ms,
-                            rtt_std_dev_ms,
-                            actual_throughput_bps,
-                            bitrate_bps,
-                            bitrate_idx: current_bitrate_idx,
-                            mcs_raw: wifi_metrics.mcs_raw,
-                            channel_busy_pct: wifi_metrics.channel_busy_pct,
-                            tx_retry_rate: wifi_metrics.tx_retry_rate,
-                            my_airtime_fraction: wifi_metrics.my_airtime_fraction,
-                            active_vr_count: wifi_metrics.active_vr_count,
-                            fairness_index: wifi_metrics.fairness_index,
-                        };
-
-                        // 4. RL Step
-                        // Calculate reward and update history
-                        let (reward, r_components) = env.compute_reward(&snapshot); // r_t = r(s_{t-1}, a_{t-1})
-
-                        let s_t = env.build_state_vector(&snapshot); // Build current state
-
-                        // Log previous state and action since update() overrides them
-                        let vec_to_str = |t: &Option<Tensor>| -> String {
-                            match t {
-                                Some(tensor) => {
-                                    Vec::<f32>::try_from(tensor.view([-1]).shallow_clone())
-                                        .map(|v| format!("{:?}", v))
-                                        .unwrap_or_else(|_| "[]".to_string())
-                                }
-                                None => "[]".to_string(),
-                            }
-                        };
-                        let s_prev_str = vec_to_str(&agent.s_prev);
-                        let a_prev_idx = agent.a_prev_idx;
-
-                        let ladder_len = env.cfg.bitrate_levels_mbps.len();
-                        let action_mask = Self::get_action_mask(
-                            &env,
-                            &snapshot,
-                            current_bitrate_idx,
-                            ladder_len,
-                            agent.cfg.action_shielding_enabled,
-                        );
-
-                        // Select action
-                        let (a_t_idx, q_values, action_probs, policy_entropy, matches_argmax) =
-                            agent.select_action(&s_t, &action_mask);
-                        // Perform SARSA update (s_{t-1}, a_{t-1}, r_{t-1}, s_t, a_t)
-                        let td_error = agent.update(&s_t, a_t_idx, reward, &action_mask);
-
-                        // 5. Apply action
-                        let next_bitrate_idx = match a_t_idx {
-                            0 => current_bitrate_idx.saturating_sub(1),
-                            1 => current_bitrate_idx,
-                            2 => (current_bitrate_idx + 1),
-                            _ => current_bitrate_idx,
-                        };
-                        let new_bitrate_bps = env.cfg.bitrate_levels_mbps
-                            [next_bitrate_idx.clamp(0, ladder_len - 1)]
-                            * 1e6;
-
-                        // 6. Stats
-                        let sarsa_stats = SARSAStats {
-                            s_prev: s_prev_str,                          // previous state
-                            a_prev_idx: a_prev_idx,                      // previous action index
-                            r_prev: reward,                              // previous reward
-                            s_t: vec_to_str(&Some(s_t.shallow_clone())), // current state
-                            a_t_idx,                                     // current action index
-                            matches_argmax, // whether current action matches argmax
-                            r_components,   // reward components
-                            q_values,       // q values
-                            action_probs,   // action probabilities
-                            policy_entropy, // policy entropy
-                            td_error,       // td error
-                            requested_bitrate_bps: new_bitrate_bps, // requested bitrate
-                        };
-
-                        alvr_events::send_event(EventType::SARSAStats(sarsa_stats));
-
-                        new_bitrate_bps
-                    } else {
+                    // Warmup period: if there is no valid data, return the current bitrate and wait for the next interval
+                    if rtt_ms < 1.0 {
                         self.last_target_bitrate_bps
+                    } else {
+                        if let (Some(agent), Some(env)) = (&mut self.sarsa_agent, &mut self.env) {
+                            // Agent snapshot enforces partial observability (depending on whether AP info use is enabled)
+                            let mut agent_snap =
+                                raw_snap.masked_for_agent(agent.cfg.ap_info_enabled);
+
+                            let current_bitrate_mbps = self.last_target_bitrate_bps / 1e6;
+                            let current_bitrate_idx = env
+                                .cfg
+                                .bitrate_levels_mbps
+                                .iter()
+                                .position(|&b| (b as f32 - current_bitrate_mbps as f32).abs() < 0.1)
+                                .unwrap_or(0);
+
+                            agent_snap.bitrate_idx = Some(current_bitrate_idx);
+
+                            // RL Step
+                            // Calculate reward and update history
+                            let (reward, r_components) = env.compute_reward(&agent_snap); // r_t = r(s_{t-1}, a_{t-1})
+
+                            let s_t = env.build_state_vector(&agent_snap); // Build current state
+
+                            env.update_history(&agent_snap);
+
+                            // Log previous state and action since update() overrides them
+                            let vec_to_str = |t: &Option<Tensor>| -> String {
+                                match t {
+                                    Some(tensor) => {
+                                        Vec::<f32>::try_from(tensor.view([-1]).shallow_clone())
+                                            .map(|v| format!("{:?}", v))
+                                            .unwrap_or_else(|_| "[]".to_string())
+                                    }
+                                    None => "[]".to_string(),
+                                }
+                            };
+                            let s_prev_str = vec_to_str(&agent.s_prev);
+                            let a_prev_idx = agent.a_prev_idx;
+
+                            let ladder_len = env.cfg.bitrate_levels_mbps.len();
+                            let action_mask = Self::get_action_mask(
+                                &env,
+                                &agent_snap,
+                                current_bitrate_idx,
+                                ladder_len,
+                                agent.cfg.action_shielding_enabled,
+                            );
+
+                            // Select action
+                            let (a_t_idx, q_values, action_probs, policy_entropy, matches_argmax) =
+                                agent.select_action(&s_t, &action_mask);
+                            // Perform SARSA update (s_{t-1}, a_{t-1}, r_{t-1}, s_t, a_t)
+                            let td_error = agent.update(&s_t, a_t_idx, reward, &action_mask);
+
+                            env.update_last_action(a_t_idx);
+
+                            // Apply action
+                            let next_bitrate_idx = match a_t_idx {
+                                0 => current_bitrate_idx.saturating_sub(1),
+                                1 => current_bitrate_idx,
+                                2 => current_bitrate_idx + 1,
+                                _ => current_bitrate_idx,
+                            };
+                            let new_bitrate_bps = env.cfg.bitrate_levels_mbps
+                                [next_bitrate_idx.clamp(0, ladder_len - 1)]
+                                * 1e6;
+
+                            // 6. Stats
+                            let sarsa_stats = SARSAStats {
+                                s_prev: s_prev_str,                          // previous state
+                                a_prev_idx: a_prev_idx, // previous action index
+                                r_prev: reward,         // previous reward
+                                s_t: vec_to_str(&Some(s_t.shallow_clone())), // current state
+                                a_t_idx,                // current action index
+                                matches_argmax,         // whether current action matches argmax
+                                r_components,           // reward components
+                                q_values,               // q values
+                                action_probs,           // action probabilities
+                                policy_entropy,         // policy entropy
+                                td_error,               // td error
+                                requested_bitrate_bps: new_bitrate_bps, // requested bitrate
+                            };
+
+                            alvr_events::send_event(EventType::SARSAStats(sarsa_stats));
+
+                            new_bitrate_bps
+                        } else {
+                            self.last_target_bitrate_bps
+                        }
                     }
                 } else {
                     self.last_target_bitrate_bps
@@ -944,7 +965,7 @@ impl BitrateManager {
 
     pub fn enable_sarsa_learning(&mut self) {
         self.sarsa_learning_enabled = true;
-        info!("SARSA learning re-enabled for client {}", self.client_ip);
+        info!("SARSA learning (re-)enabled for client {}", self.client_ip);
     }
 }
 

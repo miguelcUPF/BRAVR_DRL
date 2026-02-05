@@ -567,42 +567,42 @@ pub enum BitrateMode {
         #[schema(flag = "steamvr-restart")]
         bitrate_levels_mbps: Vec<f32>,
 
+        #[schema(strings(
+            display_name = "Use logarithmic bitrate?",
+            help = "Whether to use logarithmic bitrate instead of linear in both state and reward."
+        ))]
+        #[schema(flag = "steamvr-restart")]
+        use_log_bitrate: bool,
+
         #[schema(strings(display_name = "NFR target"))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.1, max = 1.0, logarithmic)))]
         nfr_target: f32,
 
         #[schema(strings(
-            display_name = "Shield: Max NFR Deficit Tolerance",
-            help = "The maximum allowable drop in NFR (1.0 - NFR) before the Shield blocks bitrate increases. e.g. 0.05 means if NFR drops below 95%, increasing is forbidden."
+            display_name = "NFR Tolerance (Margin)",
+            help = "The tolerance margin for NFR deviations. Used to normalize the state and scale rewards. Deviations larger than this value are treated as critical failures, blocking bitrate increases and incurring heavy penalties."
         ))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.0, max = 0.2, step = 0.005)))]
-        nfr_deficit_max: f32,
+        nfr_tolerance: f32,
 
         #[schema(strings(display_name = "VF-RTT target"))]
         #[schema(flag = "steamvr-restart")]
-        #[schema(gui(slider(min = 1., max = 200.0, logarithmic)), suffix = " ms")]
+        #[schema(gui(slider(min = 1., max = 200.0, step = 0.5)), suffix = " ms")]
         rtt_target_ms: f32,
 
         #[schema(strings(
-            display_name = "Shield: Max RTT for Increase",
-            help = "The latency threshold above which the Shield strictly forbids increasing the bitrate. Acts as a 'hard ceiling' for safety."
+            display_name = "VF-RTT Tolerance  (Margin)",
+            help = "The tolerance margin for VF-RTT deviations. Used to normalize the state and scale rewards. Deviations larger than this value are treated as critical failures, blocking bitrate increases and incurring heavy penalties."
         ))]
         #[schema(flag = "steamvr-restart")]
-        #[schema(gui(slider(min = 20.0, max = 200.0, step = 1.0)), suffix = " ms")]
-        rtt_max_ms: f32,
-
-        #[schema(strings(
-            display_name = "VF-RTT state saturation point",
-            help = "Sets the divisor for the state's tanh normalization. Latencies above this value saturate the neural network input (approaching 1.0)."
-        ))]
-        #[schema(gui(slider(min = 20., max = 200.0, logarithmic)), suffix = " ms")]
-        rtt_state_scale_ms: f32,
+        #[schema(gui(slider(min = 1.0, max = 200.0, logarithmic)), suffix = " ms")]
+        rtt_tolerance_ms: f32,
 
         #[schema(strings(
             display_name = "Reward: bitrate weight",
-            help = "Importance of achieving high bitrate."
+            help = "Relative importance of achieving high video bitrate. Scales the reward for higher bitrate levels."
         ))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.0, max = 5.0, logarithmic)))]
@@ -610,7 +610,7 @@ pub enum BitrateMode {
 
         #[schema(strings(
             display_name = "Reward: NFR weight",
-            help = "Importance of maintaining high delivered frame ratio (frames received / frames transmitted).Controls the penalty applied per 1% drop in delivered frame ratio below the target."
+            help = "Relative importance of maintaining a high delivered frame ratio (frames received / frames transmitted). Scales the penalty for dropping below the target."
         ))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.0, max = 20.0, logarithmic)))]
@@ -618,7 +618,7 @@ pub enum BitrateMode {
 
         #[schema(strings(
             display_name = "Reward: VF-RTT weight",
-            help = "Importance of maintaining low round-trip time. Controls the penalty applied for each additional 100 ms of RTT above the target."
+            help = "Relative emportance of low round-trip time. Scales the penalty for exceeding the target RTT."
         ))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.0, max = 20.0, logarithmic)))]
@@ -626,7 +626,7 @@ pub enum BitrateMode {
 
         #[schema(strings(
             display_name = "Reward: switching weight",
-            help = "Importance of avoiding bitrate changes. Controls the penalty applied whenever the agent moves to a different bitrate level to prevent frequent quality oscillations."
+            help = "Relative importance of avoiding frequent bitrate changes. Scales the penalty applied whenever the agent switches to a different bitrate level, helping to reduce oscillations."
         ))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.0, max = 5.0, logarithmic)))]
@@ -634,7 +634,7 @@ pub enum BitrateMode {
 
         #[schema(strings(
             display_name = "Reward: airtime fairness weight",
-            help = "Importance of avoiding unfair airtime usage among BSS clients. Controls the penalty applied when a flow exceeds its equal-share airtime allocation, with the penalty growing quadratically with relative excess usage."
+            help = "Relative importance of avoiding unfair airtime usage among active VR clients. Scales the penalty applied when the agent exceeds its equal-share airtime allocation."
         ))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.0, max = 5.0, logarithmic)))]
@@ -1590,14 +1590,14 @@ pub fn session_settings_default() -> SettingsDefault {
                                 },
                             variant: AveragingStrategyDefaultVariant::SimpleWindowAverage,
                         },
-                        max_bitrate_mbps: 100.0,
+                        max_bitrate_mbps: 200.0,
                         min_bitrate_mbps: 10.0,
-                        initial_bitrate_mbps: 100.0,
+                        initial_bitrate_mbps: 10.0,
                         nest_vr_profile: NestVrProfileDefault {
                             Custom: NestVrProfileCustomDefault {
                                 update_interval_nestvr_s: 1.0,
 
-                                bitrate_step_count: 9,
+                                bitrate_step_count: 19,
                                 bitrate_inc_steps: 1,
                                 bitrate_dec_steps: 1,
 
@@ -1619,17 +1619,17 @@ pub fn session_settings_default() -> SettingsDefault {
                             gui_collapsed: true,
                             element: 0.0,
                             // content: generate_log_ladder(2.0, 100.0, 10),
-                            content: (1..=100).step_by(9).map(|x| x as f32).collect(),
+                            content: (10..=200).step_by(10).map(|x| x as f32).collect(),
                         },
+                        use_log_bitrate: false,
                         nfr_target: 0.99,
-                        nfr_deficit_max: 0.05,
+                        nfr_tolerance: 0.05,
                         rtt_target_ms: 22.0,
-                        rtt_max_ms: 50.0,
-                        rtt_state_scale_ms: 100.0,
+                        rtt_tolerance_ms: 22.0,
                         w_bitrate: 1.0,
-                        w_nfr: 0.5,
-                        w_rtt: 3.0,
-                        w_switch: 0.01,
+                        w_nfr: 1.5,
+                        w_rtt: 1.5,
+                        w_switch: 0.20,
                         w_fairness: 0.0,
                         agent_config: SARSAConfigDefault {
                             load_model: false,

@@ -146,12 +146,50 @@ pub struct SARSAStats {
 
     pub r_components: Vec<f32>, // Reward components
 
-    pub q_values: Vec<f32>, // Q values (Q_{t+1})
+    pub q_values: Vec<f32>,     // Q values (Q_{t+1})
     pub action_probs: Vec<f32>, // Action probabilities (pi_{t+1})
-    pub policy_entropy: f32, // Policy entropy (H_{t+1})
-    pub td_error: f32,   // Temporal difference error (TD_{t+1})
+    pub policy_entropy: f32,    // Policy entropy (H_{t+1})
+    pub td_error: f32,          // Temporal difference error (TD_{t+1})
 
     pub requested_bitrate_bps: f32, // Requested bitrate at this step
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct EnvironmentSnapshot {
+    pub bitrate_idx: Option<usize>,
+    pub bitrate_bps: f32,
+    pub nfr: f32,
+    pub rtt_ms: f32,
+    pub rtt_max_ms: f32,
+    pub actual_throughput_bps: f32,
+
+    // AP Telemetry
+    pub mcs_raw: f32,
+    pub channel_busy_pct: f32,
+    pub tx_retry_rate: f32,
+    pub my_airtime_fraction: f32,
+    pub active_vr_count: usize,
+    pub fairness_index: f32,
+}
+
+impl EnvironmentSnapshot {
+    pub fn masked_for_agent(&self, ap_info_enabled: bool) -> Self {
+        if ap_info_enabled {
+            return self.clone();
+        }
+
+        let mut s = self.clone();
+
+        // Mask AP-dependent fields
+        s.mcs_raw = 0.0;
+        s.channel_busy_pct = 0.0;
+        s.tx_retry_rate = 0.0;
+        s.my_airtime_fraction = 0.0;
+        s.active_vr_count = 1;
+        s.fairness_index = 1.0;
+
+        s
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -190,6 +228,7 @@ pub enum EventType {
     HeuristicStats(HeuristicStats),
     SARSAStats(SARSAStats),
     APStats(APStats),
+    EnvironmentSnapshot(EnvironmentSnapshot),
     ClientIp(IpAddr),
     Tracking(Box<TrackingEvent>),
     Buttons(Vec<ButtonEvent>),

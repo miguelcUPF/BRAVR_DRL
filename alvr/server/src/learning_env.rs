@@ -1,7 +1,12 @@
+use alvr_events::EnvironmentSnapshot;
 use tch::Tensor;
 
 pub const STATE_DIM: i64 = 14;
-const MAX_MCS: f32 = 11.0; // assuming 802.11ax
+const MAX_MCS: f32 = 11.0; // 802.11ax/ac max index
+
+const SWITCH_AGE_SCALE: f32 = 10.0; // 10 steps since switch -> tanh(1.0)
+
+const MAX_PENALTY_CLAMP: f32 = 10.0;
 
 #[derive(Clone, Debug)]
 pub struct LearningConfig {
@@ -11,12 +16,9 @@ pub struct LearningConfig {
     pub nfr_target: f32,
     pub rtt_target_ms: f32,
 
-    // Action shielding
-    pub nfr_deficit_max: f32,
-    pub rtt_max_ms: f32,
-
-    // Scales
-    pub rtt_state_scale_ms: f32, // Divisor for tanh, e.g., 100.0 (values over 100ms map to ~1.0)
+    // Action shielding (normalization limits)
+    pub nfr_tolerance: f32,
+    pub rtt_tolerance_ms: f32,
 
     // Weights
     pub w_bitrate: f32,
@@ -24,6 +26,9 @@ pub struct LearningConfig {
     pub w_rtt: f32,
     pub w_switch: f32,
     pub w_fairness: f32,
+
+    // Bitrate Utility
+    pub use_log_bitrate: bool,
 }
 
 impl Default for LearningConfig {
@@ -33,16 +38,16 @@ impl Default for LearningConfig {
             nfr_target: 0.95,
             rtt_target_ms: 22.0,
 
-            nfr_deficit_max: 0.05,
-            rtt_max_ms: 50.0,
-
-            rtt_state_scale_ms: 100.0,
+            nfr_tolerance: 0.05,
+            rtt_tolerance_ms: 50.0,
 
             w_bitrate: 1.0,
-            w_nfr: 0.5,
-            w_rtt: 3.0,
+            w_nfr: 2.0,
+            w_rtt: 2.0,
             w_switch: 0.05,
             w_fairness: 0.5,
+
+            use_log_bitrate: false,
         }
     }
 }
@@ -51,165 +56,205 @@ impl LearningConfig {
     pub fn new(
         bitrate_levels_mbps: Vec<f32>,
         nfr_target: f32,
-        nfr_deficit_max: f32,
+        nfr_tolerance: f32,
         rtt_target_ms: f32,
-        rtt_max_ms: f32,
-        rtt_state_scale_ms: f32,
+        rtt_tolerance_ms: f32,
         w_bitrate: f32,
         w_nfr: f32,
         w_rtt: f32,
         w_switch: f32,
         w_fairness: f32,
+        use_log_bitrate: bool,
     ) -> Self {
         Self {
             bitrate_levels_mbps,
             nfr_target,
             rtt_target_ms,
-            nfr_deficit_max,
-            rtt_max_ms,
-            rtt_state_scale_ms,
+            nfr_tolerance,
+            rtt_tolerance_ms,
             w_bitrate,
             w_nfr,
             w_rtt,
             w_switch,
             w_fairness,
+            use_log_bitrate,
         }
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct EnvironmentSnapshot {
-    pub nfr: f32,
-    pub rtt_ms: f32,
-    pub rtt_std_dev_ms: f32,
-    pub actual_throughput_bps: f32,
-    pub bitrate_bps: f32,
-    pub bitrate_idx: usize,
-
-    // AP Telemetry
-    pub mcs_raw: f32,
-    pub channel_busy_pct: f32,
-    pub tx_retry_rate: f32,
-    pub my_airtime_fraction: f32,
-    pub active_vr_count: usize,
-    pub fairness_index: f32,
-}
-
 pub struct StreamingEnvironment {
     pub cfg: LearningConfig,
-    prev_norm_vals: Option<(f32, f32, f32)>, // (nfr, rtt, mcs) normalized
-    prev_bitrate_idx: Option<usize>,         // The index at t-1
-    last_move_dir: i32,                      // Direction of move (t-2 -> t-1)
+
+    pub prev_snapshot: Option<EnvironmentSnapshot>,
+
+    pub action_momentum: i32,   // Direction of move
+    pub last_switch_steps: i32, // Number of steps since last switch
 }
 
 impl StreamingEnvironment {
     pub fn new(cfg: LearningConfig) -> Self {
         Self {
             cfg,
-            prev_norm_vals: None,
-            prev_bitrate_idx: None,
-            last_move_dir: 0,
+            prev_snapshot: None,
+            action_momentum: 0,
+            last_switch_steps: 0,
         }
     }
 
-    pub fn build_state_vector(&mut self, snap: &EnvironmentSnapshot) -> Tensor {
-        // 1. Normalize Current Inputs
-        let nfr_norm = snap.nfr.clamp(0.0, 1.0);
-        let rtt_norm = (snap.rtt_ms / self.cfg.rtt_state_scale_ms).tanh();
-        let rtt_std_norm = (snap.rtt_std_dev_ms / 30.0).tanh();
-        let mcs_norm = (snap.mcs_raw / MAX_MCS).clamp(0.0, 1.0);
+    fn get_bitrate_utility(&self, snap: &EnvironmentSnapshot) -> f32 {
+        let b_curr_mbps = snap.bitrate_bps / 1e6;
+        let b_levels = &self.cfg.bitrate_levels_mbps;
 
-        let target_bps = snap.bitrate_bps.max(1.0);
-        let raw_efficiency = snap.actual_throughput_bps / target_bps;
-        let efficiency_norm = raw_efficiency.clamp(0.0, 1.0);
+        let b_min = *b_levels.first().unwrap();
+        let b_max = *b_levels.last().unwrap();
 
-        let b_min = *self.cfg.bitrate_levels_mbps.first().unwrap();
-        let b_max = *self.cfg.bitrate_levels_mbps.last().unwrap();
-        let b_curr = snap.bitrate_bps / 1e6;
-
-        let safe_curr = b_curr.max(0.1);
+        let safe_curr = b_curr_mbps.max(0.1);
         let safe_min = b_min.max(0.1);
         let safe_max = b_max.max(safe_min + 0.1);
-        let br_norm = (safe_curr - safe_min) / (safe_max - safe_min);
 
-        // 2. Compute Trends
-        let (d_nfr, d_rtt, d_mcs) = if let Some((p_nfr, p_rtt, p_mcs)) = self.prev_norm_vals {
-            (
-                (nfr_norm - p_nfr).clamp(-1.0, 1.0),
-                (rtt_norm - p_rtt).clamp(-1.0, 1.0),
-                (mcs_norm - p_mcs).clamp(-1.0, 1.0),
-            )
+        if self.cfg.use_log_bitrate {
+            // Logarithmic Utility (Diminishing returns)
+            let u_curr = safe_curr.ln();
+            let u_min = safe_min.ln();
+            let u_max = safe_max.ln();
+            ((u_curr - u_min) / (u_max - u_min)).clamp(0.0, 1.0)
         } else {
-            (0.0, 0.0, 0.0)
+            // Linear Utility
+            ((safe_curr - safe_min) / (safe_max - safe_min)).clamp(0.0, 1.0)
+        }
+    }
+
+    pub fn update_last_action(&mut self, a_t_idx: i64) {
+        self.action_momentum = match a_t_idx {
+            0 => -1,
+            1 => 0,
+            2 => 1,
+            _ => 0,
         };
 
-        // 3. Update history
-        self.prev_norm_vals = Some((nfr_norm, rtt_norm, mcs_norm));
+        if a_t_idx != 1 {
+            self.last_switch_steps = 0;
+        } else {
+            self.last_switch_steps += 1;
+        }
+    }
 
-        // 4. Trend Scalar
-        let trend_scalar = self.last_move_dir as f32;
+    pub fn update_history(&mut self, snap: &EnvironmentSnapshot) {
+        self.prev_snapshot = Some(snap.clone());
+    }
 
-        // 5. Build State Tensor
+    pub fn build_state_vector(&self, snap: &EnvironmentSnapshot) -> Tensor {
+        // 1. Distance to Targets
+        let nfr_dist = ((self.cfg.nfr_target - snap.nfr) / self.cfg.nfr_tolerance).clamp(-1.0, 1.0);
+        let rtt_dist =
+            ((snap.rtt_ms - self.cfg.rtt_target_ms) / self.cfg.rtt_tolerance_ms).clamp(-1.0, 1.0);
+
+        // 2. Compute Trends
+        let (d_nfr, d_rtt) = if let Some(prev_snap) = &self.prev_snapshot {
+            (
+                ((snap.nfr - prev_snap.nfr) / self.cfg.nfr_tolerance).clamp(-1.0, 1.0),
+                ((snap.rtt_ms - prev_snap.rtt_ms) / self.cfg.rtt_tolerance_ms).clamp(-1.0, 1.0),
+            )
+        } else {
+            (0.0, 0.0)
+        };
+
+        // 3. RTT Coefficient of Variation (CV)
+        let rtt_cv = if snap.rtt_ms > 1e-5 {
+            ((snap.rtt_max_ms - snap.rtt_ms) / snap.rtt_ms).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        // 4. Efficiency
+        let target_bps = snap.bitrate_bps.max(1.0);
+        let efficiency = (snap.actual_throughput_bps / target_bps).clamp(0.0, 1.0);
+
+        // 5. Bitrate Utility
+        let bitrate_utility = self.get_bitrate_utility(snap);
+
+        // 6. History
+        let time_since_switch = (self.last_switch_steps as f32 / SWITCH_AGE_SCALE).tanh();
+        let action_momentum = self.action_momentum as f32;
+
+        // 7. MCS
+        let mcs = (snap.mcs_raw / MAX_MCS).clamp(0.0, 1.0);
+
+        // Build State Tensor
         let state_vec = vec![
-            nfr_norm,
+            // Performance
+            nfr_dist,
             d_nfr,
-            rtt_norm,
+            rtt_dist,
             d_rtt,
-            rtt_std_norm,
-            efficiency_norm,
-            mcs_norm,
-            d_mcs,
-            br_norm,
+            rtt_cv,
+            // Efficiency
+            efficiency,
+            // Bitrate
+            bitrate_utility,
+            // History
+            time_since_switch,
+            action_momentum,
+            // Signal
+            mcs,
+            // Medium contention
             snap.channel_busy_pct,
             snap.tx_retry_rate,
+            // Fairness
             snap.my_airtime_fraction,
             snap.fairness_index,
-            trend_scalar,
         ];
 
         Tensor::from_slice(&state_vec).unsqueeze(0)
     }
 
-    pub fn compute_reward(&mut self, snap: &EnvironmentSnapshot) -> (f32, Vec<f32>) {
-        // 1. Bitrate Utility (Logarithmic Min-Max)
-        let b_min = *self.cfg.bitrate_levels_mbps.first().unwrap();
-        let b_max = *self.cfg.bitrate_levels_mbps.last().unwrap();
-        let b_curr = snap.bitrate_bps / 1e6;
+    pub fn compute_reward(&self, snap: &EnvironmentSnapshot) -> (f32, Vec<f32>) {
+        // 1. Bitrate Utility
+        let br_utility = self.get_bitrate_utility(snap);
 
-        let safe_curr = b_curr.max(0.1);
-        let safe_min = b_min.max(0.1);
-        let safe_max = b_max.max(safe_min + 0.1); // Ensure max > min
-
-        let br_utility = (safe_curr - safe_min) / (safe_max - safe_min).max(0.1);
-
-        // 2. NFR Penalty
+        // 2. NFR Penalty: Only punish if below target
         let nfr_deficit = (self.cfg.nfr_target - snap.nfr).max(0.0);
-        let nfr_penalty = nfr_deficit * 100.0;
+        let nfr_ratio = nfr_deficit / self.cfg.nfr_tolerance;
+        let nfr_penalty = nfr_ratio.powi(2).min(MAX_PENALTY_CLAMP);
 
-        // 3. RTT Penalty
-        let rtt_excess_ms = (snap.rtt_ms - self.cfg.rtt_target_ms).max(0.0);
-        let rtt_penalty = rtt_excess_ms / 100.0;
+        // 3. RTT Penalty: Only punish if above target
+        let rtt_excess = (snap.rtt_ms - self.cfg.rtt_target_ms).max(0.0);
+        let rtt_ratio = rtt_excess / self.cfg.rtt_tolerance_ms;
+        let rtt_penalty = rtt_ratio.powi(2).min(MAX_PENALTY_CLAMP);
 
         // 4. Switch Penalty
-        let mut switch_penalty = 0.0;
-        if let Some(prev_idx) = self.prev_bitrate_idx {
-            if snap.bitrate_idx != prev_idx {
-                switch_penalty = 1.0;
-                self.last_move_dir = if snap.bitrate_idx > prev_idx { 1 } else { -1 };
-            } else {
-                self.last_move_dir = 0;
-            }
-        }
-        self.prev_bitrate_idx = Some(snap.bitrate_idx);
+        let switch_penalty = if let Some(prev_snap) = &self.prev_snapshot {
+            if prev_snap.bitrate_idx != snap.bitrate_idx {
+                let prev_health_nfr = ((prev_snap.nfr
+                    - (self.cfg.nfr_target - self.cfg.nfr_tolerance))
+                    / self.cfg.nfr_tolerance)
+                    .clamp(0.0, 1.0);
+                let prev_health_rtt = (((self.cfg.rtt_target_ms + self.cfg.rtt_tolerance_ms)
+                    - prev_snap.rtt_ms)
+                    / self.cfg.rtt_tolerance_ms)
+                    .clamp(0.0, 1.0);
+                let prev_system_health = prev_health_nfr.min(prev_health_rtt);
 
-        // 5. Fairness Penalty
+                if snap.bitrate_idx < prev_snap.bitrate_idx {
+                    prev_system_health.powi(2)
+                } else {
+                    1.0
+                }
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        // 5. Fairness Penalty (Bounded Soft Constraint)
         let n_users = snap.active_vr_count.max(1) as f32;
         let target_share = 1.0 / n_users;
         let deviation = ((snap.my_airtime_fraction - target_share) / target_share).max(0.0);
-        let fairness_penalty = deviation.powi(2);
+        let fairness_penalty = deviation.powi(2).tanh();
 
-        // 5. Calculate weighted sum
-        let reward = (self.cfg.w_bitrate * (br_utility - 1.0))
+        // 6. Weighted Sum Calculation
+        let reward = (self.cfg.w_bitrate * br_utility)
             - (self.cfg.w_nfr * nfr_penalty)
             - (self.cfg.w_rtt * rtt_penalty)
             - (self.cfg.w_switch * switch_penalty)
@@ -218,7 +263,7 @@ impl StreamingEnvironment {
         (
             reward,
             vec![
-                self.cfg.w_bitrate * (br_utility - 1.0),
+                self.cfg.w_bitrate * br_utility,
                 -self.cfg.w_nfr * nfr_penalty,
                 -self.cfg.w_rtt * rtt_penalty,
                 -self.cfg.w_switch * switch_penalty,
