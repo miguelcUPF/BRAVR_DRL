@@ -637,7 +637,7 @@ pub enum BitrateMode {
             help = "Relative importance of avoiding unfair airtime usage among active VR clients. Scales the penalty applied when the agent exceeds its equal-share airtime allocation."
         ))]
         #[schema(flag = "steamvr-restart")]
-        #[schema(gui(slider(min = 0.0, max = 5.0, logarithmic)))]
+        #[schema(gui(slider(min = 0.0, max = 15.0, logarithmic)))]
         w_fairness: f32,
 
         #[schema(strings(display_name = "SARSA agent configuration"))]
@@ -1619,7 +1619,7 @@ pub fn session_settings_default() -> SettingsDefault {
                             gui_collapsed: true,
                             element: 0.0,
                             // content: generate_log_ladder(2.0, 100.0, 10),
-                            content: (10..=200).step_by(10).map(|x| x as f32).collect(),
+                            content: (10..=150).step_by(10).map(|x| x as f32).collect(),
                         },
                         use_log_bitrate: false,
                         nfr_target: 0.99,
@@ -1637,7 +1637,7 @@ pub fn session_settings_default() -> SettingsDefault {
                             action_shielding_enabled: true,
                             ap_info_enabled: true,
                             n_step: 3,
-                            gamma: 0.9,
+                            gamma: 0.8,
                             lr: 1e-3,
                             tau: 0.01,
                             temperature: 0.25,
