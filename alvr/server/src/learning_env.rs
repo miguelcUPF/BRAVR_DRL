@@ -1,7 +1,7 @@
 use alvr_events::EnvironmentSnapshot;
 use tch::Tensor;
 
-pub const STATE_DIM: i64 = 14;
+pub const STATE_DIM: i64 = 15;
 const MAX_MCS: f32 = 11.0; // 802.11ax/ac max index
 
 const SWITCH_AGE_SCALE: f32 = 10.0; // 10 steps since switch -> tanh(1.0)
@@ -203,6 +203,8 @@ impl StreamingEnvironment {
             // Fairness
             snap.my_airtime_fraction,
             snap.fairness_index,
+            // User density
+            1.0 / snap.active_vr_count as f32,
         ];
 
         Tensor::from_slice(&state_vec).unsqueeze(0)
@@ -247,11 +249,18 @@ impl StreamingEnvironment {
             0.0
         };
 
-        // 5. Fairness Penalty (Bounded Soft Constraint)
+        // 5. Fairness Penalty
         let n_users = snap.active_vr_count.max(1) as f32;
-        let target_share = 1.0 / n_users;
-        let deviation = ((snap.my_airtime_fraction - target_share) / target_share).max(0.0);
-        let fairness_penalty = deviation.powi(2).tanh();
+
+        let background_traffic = (snap.channel_busy_pct - snap.total_vr_airtime_fraction).max(0.0); // % of channel activity due to non-VR traffic
+        let max_safe_utilization = 0.90; // max safe channel utilization
+
+        let available_vr_capacity = (max_safe_utilization - background_traffic).max(0.01);
+
+        let my_fair_share = available_vr_capacity / n_users;
+
+        let deviation = ((snap.my_airtime_fraction - my_fair_share) / my_fair_share).max(0.0);
+        let fairness_penalty = deviation.powi(2).min(MAX_PENALTY_CLAMP);
 
         // 6. Weighted Sum Calculation
         let reward = (self.cfg.w_bitrate * br_utility)

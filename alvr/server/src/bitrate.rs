@@ -580,6 +580,8 @@ impl BitrateManager {
             channel_busy_pct: wifi_metrics_raw.channel_busy_pct,
             tx_retry_rate: wifi_metrics_raw.tx_retry_rate,
             my_airtime_fraction: wifi_metrics_raw.my_airtime_fraction,
+            my_airtime_share: wifi_metrics_raw.my_airtime_share,
+            total_vr_airtime_fraction: wifi_metrics_raw.total_vr_airtime_fraction,
             active_vr_count: wifi_metrics_raw.active_vr_count,
             fairness_index: wifi_metrics_raw.fairness_index,
         };

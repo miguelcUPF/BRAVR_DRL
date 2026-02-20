@@ -19,9 +19,11 @@ pub struct WifiMetrics {
     pub tx_retry_rate: f32,
 
     // Fairness Data
-    pub my_airtime_fraction: f32, // My portion of the total VR airtime [0.0, 1.0]
-    pub fairness_index: f32,      // Global Jain's Index [0.0, 1.0]
-    pub active_vr_count: usize,   // Number of active VR clients (N_t)
+    pub my_airtime_fraction: f32, // Fraction of wall-clock time I used the medium (i.e., absolute airtime); how busy am I? [0.0, 1.0]
+    pub my_airtime_share: f32, // My share of the medium (i.e., relative airtime); how dominant am I? [0.0, 1.0]
+    pub total_vr_airtime_fraction: f32, // Fraction of wall-clock time all VR clients used the medium
+    pub fairness_index: f32,            // Global Jain's Index [0.0, 1.0]
+    pub active_vr_count: usize,         // Number of active VR clients (N_t)
 }
 
 impl Default for WifiMetrics {
@@ -31,6 +33,8 @@ impl Default for WifiMetrics {
             channel_busy_pct: 0.0,
             tx_retry_rate: 0.0,
             my_airtime_fraction: 0.0,
+            my_airtime_share: 0.0,
+            total_vr_airtime_fraction: 0.0,
             fairness_index: 1.0,
             active_vr_count: 1, // Default to 1 (myself)
         }
@@ -66,11 +70,12 @@ impl WifiStatsProcessor {
         let (mcs_raw, busy_frac) = self.compute_channel_stats(buffer);
 
         // 2. Compute Fairness & Airtime
-        let (my_frac, fairness_idx, count, my_retry_rate) = if let Some(latest) = buffer.back() {
-            self.compute_client_metrics(latest)
-        } else {
-            (0.0, 1.0, 1, 0.0)
-        };
+        let (my_frac, my_share, total_frac, fairness_idx, count, my_retry_rate) =
+            if let Some(latest) = buffer.back() {
+                self.compute_client_metrics(latest)
+            } else {
+                (0.0, 0.0, 0.0, 1.0, 1, 0.0)
+            };
 
         // 3. Update Cache
         self.last_metrics = WifiMetrics {
@@ -78,6 +83,8 @@ impl WifiStatsProcessor {
             channel_busy_pct: busy_frac,
             tx_retry_rate: my_retry_rate,
             my_airtime_fraction: my_frac,
+            my_airtime_share: my_share,
+            total_vr_airtime_fraction: total_frac,
             fairness_index: fairness_idx,
             active_vr_count: count,
         };
@@ -132,17 +139,24 @@ impl WifiStatsProcessor {
         (mcs_avg, ch_busy_frac)
     }
 
-    // Returns: (my_airtime_fraction, Jain_Index, N_Active_Clients, My_Retry_Rate)
-    fn compute_client_metrics(&mut self, latest_ap_stats: &APStats) -> (f32, f32, usize, f32) {
+    // Returns: (my_airtime_fraction, my_airtime_share, total_vr_airtime_fraction, Jain_Index, N_Active_Clients, My_Retry_Rate)
+    fn compute_client_metrics(
+        &mut self,
+        latest_ap_stats: &APStats,
+    ) -> (f32, f32, f32, f32, usize, f32) {
         let (iface_opt, _) = find_client_interface(latest_ap_stats, self.client_ip);
         let iface = match iface_opt {
             Some(i) => i,
-            None => return (0.0, 1.0, 1, 0.0),
+            None => return (0.0, 0.0, 0.0, 1.0, 1, 0.0),
         };
 
         let mut usage_map: HashMap<String, f32> = HashMap::new();
-        let mut total_vr_airtime = 0.0;
+
+        let mut total_vr_usage = 0.0; // in microseconds
+        let mut total_vr_airtime_fraction = 0.0; // in %
+
         let mut my_airtime_fraction = 0.0;
+        let mut my_usage = 0.0;
         let mut my_retry_rate = 0.0;
 
         // A. Calculate raw usage for ALL VR clients
@@ -151,7 +165,7 @@ impl WifiStatsProcessor {
                 continue;
             }
 
-            let (air_fraction_opt, usage_opt, retry_rate_opt) = self.update_client_stats(
+            let (air_utilization_opt, usage_opt, retry_rate_opt) = self.update_client_stats(
                 &c.ip,
                 c.tx.duration.unwrap_or(0),
                 c.rx.duration.unwrap_or(0),
@@ -160,18 +174,26 @@ impl WifiStatsProcessor {
                 c.tx.retries.unwrap_or(0),
             );
 
-            let air_fraction = air_fraction_opt.unwrap_or(0.0);
+            let air_utilization = air_utilization_opt.unwrap_or(0.0);
             let usage = usage_opt.unwrap_or(0.0);
             let retry_rate = retry_rate_opt.unwrap_or(0.0);
 
             usage_map.insert(c.ip.clone(), usage);
-            total_vr_airtime += usage;
+            total_vr_usage += usage;
+            total_vr_airtime_fraction += air_utilization;
 
             if c.ip == self.client_ip.to_string() {
-                my_airtime_fraction = air_fraction;
+                my_airtime_fraction = air_utilization;
+                my_usage = usage;
                 my_retry_rate = retry_rate; // only for self
             }
         }
+
+        let my_airtime_share = if total_vr_usage > 0.0 {
+            my_usage / total_vr_usage
+        } else {
+            0.0
+        };
 
         let n_clients = usage_map.len().max(1);
 
@@ -179,8 +201,8 @@ impl WifiStatsProcessor {
         // We use the fractions (normalized values) for Jain's index
         let mut sum_sq = 0.0;
         for raw in usage_map.values() {
-            let frac = if total_vr_airtime > 0.0 {
-                raw / total_vr_airtime
+            let frac = if total_vr_usage > 0.0 {
+                raw / total_vr_usage
             } else {
                 0.0
             };
@@ -193,7 +215,14 @@ impl WifiStatsProcessor {
             1.0
         };
 
-        (my_airtime_fraction, jain, n_clients, my_retry_rate)
+        (
+            my_airtime_fraction,
+            my_airtime_share,
+            total_vr_airtime_fraction,
+            jain,
+            n_clients,
+            my_retry_rate,
+        )
     }
 
     // Generic helper for any client IP
@@ -234,8 +263,8 @@ impl WifiStatsProcessor {
         let d_time_us = (now - entry.last_time_ms) * 1000;
 
         let airtime_usage = d_tx as f32 + d_rx as f32;
-        let airtime_fraction = if d_time_us > 0 {
-            airtime_usage as f32 / d_time_us as f32
+        let airtime_utilization = if d_time_us > 0 {
+            (airtime_usage as f32 / d_time_us as f32).clamp(0.0, 1.0)
         } else {
             0.0
         };
@@ -258,7 +287,7 @@ impl WifiStatsProcessor {
         entry.last_tx_retries = tx_retries;
 
         (
-            Some(airtime_fraction),
+            Some(airtime_utilization),
             Some(airtime_usage),
             Some(retry_rate),
         )

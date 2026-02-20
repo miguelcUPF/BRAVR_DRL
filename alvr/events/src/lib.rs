@@ -168,6 +168,8 @@ pub struct EnvironmentSnapshot {
     pub channel_busy_pct: f32,
     pub tx_retry_rate: f32,
     pub my_airtime_fraction: f32,
+    pub my_airtime_share: f32,
+    pub total_vr_airtime_fraction: f32,
     pub active_vr_count: usize,
     pub fairness_index: f32,
 }
@@ -185,6 +187,8 @@ impl EnvironmentSnapshot {
         s.channel_busy_pct = 0.0;
         s.tx_retry_rate = 0.0;
         s.my_airtime_fraction = 0.0;
+        s.my_airtime_share = 0.0;
+        s.total_vr_airtime_fraction = 0.0;
         s.active_vr_count = 1;
         s.fairness_index = 1.0;
 
