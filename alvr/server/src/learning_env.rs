@@ -6,8 +6,6 @@ const MAX_MCS: f32 = 11.0; // 802.11ax/ac max index
 
 const SWITCH_AGE_SCALE: f32 = 10.0; // 10 steps since switch -> tanh(1.0)
 
-const MAX_PENALTY_CLAMP: f32 = 10.0;
-
 #[derive(Clone, Debug)]
 pub struct LearningConfig {
     pub bitrate_levels_mbps: Vec<f32>, // The discrete bitrate ladder
@@ -29,6 +27,9 @@ pub struct LearningConfig {
 
     // Bitrate Utility
     pub use_log_bitrate: bool,
+
+    // Max penalty clamp
+    pub max_penalty_clamp: f32,
 }
 
 impl Default for LearningConfig {
@@ -48,6 +49,8 @@ impl Default for LearningConfig {
             w_fairness: 0.5,
 
             use_log_bitrate: false,
+
+            max_penalty_clamp: 10.0,
         }
     }
 }
@@ -65,6 +68,7 @@ impl LearningConfig {
         w_switch: f32,
         w_fairness: f32,
         use_log_bitrate: bool,
+        max_penalty_clamp: f32,
     ) -> Self {
         Self {
             bitrate_levels_mbps,
@@ -78,6 +82,7 @@ impl LearningConfig {
             w_switch,
             w_fairness,
             use_log_bitrate,
+            max_penalty_clamp,
         }
     }
 }
@@ -217,12 +222,12 @@ impl StreamingEnvironment {
         // 2. NFR Penalty: Only punish if below target
         let nfr_deficit = (self.cfg.nfr_target - snap.nfr).max(0.0);
         let nfr_ratio = nfr_deficit / self.cfg.nfr_tolerance;
-        let nfr_penalty = nfr_ratio.powi(2).min(MAX_PENALTY_CLAMP);
+        let nfr_penalty = nfr_ratio.powi(2);
 
         // 3. RTT Penalty: Only punish if above target
         let rtt_excess = (snap.rtt_ms - self.cfg.rtt_target_ms).max(0.0);
         let rtt_ratio = rtt_excess / self.cfg.rtt_tolerance_ms;
-        let rtt_penalty = rtt_ratio.powi(2).min(MAX_PENALTY_CLAMP);
+        let rtt_penalty = rtt_ratio.powi(2);
 
         // 4. Switch Penalty
         let switch_penalty = if let Some(prev_snap) = &self.prev_snapshot {
@@ -260,23 +265,31 @@ impl StreamingEnvironment {
         let my_fair_share = available_vr_capacity / n_users;
 
         let deviation = ((snap.my_airtime_fraction - my_fair_share) / my_fair_share).max(0.0);
-        let fairness_penalty = deviation.powi(2).min(MAX_PENALTY_CLAMP);
+        let fairness_penalty = deviation.powi(2);
+
+        let clamp = |p: f32| {
+            if self.cfg.max_penalty_clamp > 0.0 {
+                p.min(self.cfg.max_penalty_clamp)
+            } else {
+                p
+            }
+        };
 
         // 6. Weighted Sum Calculation
         let reward = (self.cfg.w_bitrate * br_utility)
-            - (self.cfg.w_nfr * nfr_penalty)
-            - (self.cfg.w_rtt * rtt_penalty)
-            - (self.cfg.w_switch * switch_penalty)
-            - (self.cfg.w_fairness * fairness_penalty);
+            - (self.cfg.w_nfr * clamp(nfr_penalty))
+            - (self.cfg.w_rtt * clamp(rtt_penalty))
+            - (self.cfg.w_switch * clamp(switch_penalty))
+            - (self.cfg.w_fairness * clamp(fairness_penalty));
 
         (
             reward,
             vec![
                 self.cfg.w_bitrate * br_utility,
-                -self.cfg.w_nfr * nfr_penalty,
-                -self.cfg.w_rtt * rtt_penalty,
-                -self.cfg.w_switch * switch_penalty,
-                -self.cfg.w_fairness * fairness_penalty,
+                -self.cfg.w_nfr * clamp(nfr_penalty),
+                -self.cfg.w_rtt * clamp(rtt_penalty),
+                -self.cfg.w_switch * clamp(switch_penalty),
+                -self.cfg.w_fairness * clamp(fairness_penalty),
             ],
         )
     }

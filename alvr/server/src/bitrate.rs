@@ -476,6 +476,7 @@ impl BitrateManager {
                     w_switch,
                     w_fairness,
                     use_log_bitrate,
+                    max_penalty_clamp,
                     agent_config,
                     ..
                 } => {
@@ -496,6 +497,7 @@ impl BitrateManager {
                         *w_switch,
                         *w_fairness,
                         *use_log_bitrate,
+                        *max_penalty_clamp,
                     );
                     self.env = Some(StreamingEnvironment::new(env_config));
 

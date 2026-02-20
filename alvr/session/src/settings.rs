@@ -640,6 +640,14 @@ pub enum BitrateMode {
         #[schema(gui(slider(min = 0.0, max = 15.0, logarithmic)))]
         w_fairness: f32,
 
+        #[schema(strings(
+            display_name = "Reward: max penalty clamp",
+            help = "Upper bound applied to each individual penalty term. Set to 0 to disable clamping."
+        ))]
+        #[schema(flag = "steamvr-restart")]
+        #[schema(gui(slider(min = 0.0, max = 15.0, logarithmic)))]
+        max_penalty_clamp: f32,
+
         #[schema(strings(display_name = "SARSA agent configuration"))]
         agent_config: SARSAConfig,
     },
@@ -1631,6 +1639,7 @@ pub fn session_settings_default() -> SettingsDefault {
                         w_rtt: 1.5,
                         w_switch: 0.20,
                         w_fairness: 0.0,
+                        max_penalty_clamp: 10.0,
                         agent_config: SARSAConfigDefault {
                             load_model: false,
                             save_model: true,
