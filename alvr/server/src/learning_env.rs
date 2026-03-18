@@ -164,8 +164,8 @@ impl StreamingEnvironment {
             (0.0, 0.0)
         };
 
-        // 3. RTT Coefficient of Variation (CV)
-        let rtt_cv = if snap.rtt_ms > 1e-5 {
+        // 3. RTT Spike Ratio
+        let rtt_spike_ratio = if snap.rtt_ms > 1e-5 {
             ((snap.rtt_max_ms - snap.rtt_ms) / snap.rtt_ms).clamp(0.0, 1.0)
         } else {
             0.0
@@ -192,7 +192,7 @@ impl StreamingEnvironment {
             d_nfr,
             rtt_dist,
             d_rtt,
-            rtt_cv,
+            rtt_spike_ratio,
             // Efficiency
             efficiency,
             // Bitrate
