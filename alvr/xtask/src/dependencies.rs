@@ -272,12 +272,6 @@ fn get_android_openxr_loaders() {
         "https://developer.yvrdream.com/yvrdoc/sdk/openxr/yvr_openxr_mobile_sdk_1.0.0.zip",
         "yvr_openxr_mobile_sdk_1.0.0/OpenXR/Libs/Android/arm64-v8a",
     );
-
-    get_openxr_loader(
-        "lynx",
-        "https://portal.lynx-r.com/downloads/download/16", // version 1.0.0
-        "jni/arm64-v8a",
-    );
 }
 
 pub fn build_android_deps(skip_admin_priv: bool) {
