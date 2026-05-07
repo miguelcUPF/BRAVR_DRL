@@ -223,8 +223,8 @@ impl Layout {
         }
     }
 
-    pub fn sarsa_model(&self) -> PathBuf {
-        self.config_dir.join("sarsa_model.safetensors")
+    pub fn bravr_model(&self) -> PathBuf {
+        self.config_dir.join("bravr_model.safetensors")
     }
 
     pub fn crash_log(&self) -> PathBuf {

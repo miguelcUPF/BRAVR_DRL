@@ -168,8 +168,8 @@ impl eframe::App for Dashboard {
                 EventType::StatisticsSummary(statistics) => {
                     self.statistics_tab.update_statistics(statistics)
                 }
-                EventType::SARSAStats(statistics) => {
-                    self.statistics_tab.update_sarsa_stats(statistics)
+                EventType::BRAVRStats(statistics) => {
+                    self.statistics_tab.update_bravr_stats(statistics)
                 }
                 EventType::APStats(statistics) => self.statistics_tab.update_ap_stats(statistics),
                 EventType::ClientIp(ip) => self.statistics_tab.update_client_ip(ip),
@@ -198,28 +198,28 @@ impl eframe::App for Dashboard {
                                 self.statistics_tab.disable_bulk_ap_stats();
                             }
 
-                            if let BitrateMode::Sarsa { agent_config, .. } =
+                            if let BitrateMode::Bravr { agent_config, .. } =
                                 &settings.video.bitrate.mode
                             {
                                 if !agent_config.ap_info_enabled {
                                     warn!(
-                                        "HTTP server collection and SARSA are both enabled but AP info is disabled. The agent will not use AP telemetry to guide its decisions."
+                                        "HTTP server collection and BRAVR are both enabled but AP info is disabled. The agent will not use AP telemetry to guide its decisions."
                                     );
                                 }
                             }
                         }
                         Switch::Disabled => {
                             self.statistics_tab.disable_ap_stats();
-                            if let BitrateMode::Sarsa { .. } = &settings.video.bitrate.mode {
-                                warn!("HTTP server collection is disabled but SARSA is enabled. The agent will not use AP telemetry to guide its decisions.");
+                            if let BitrateMode::Bravr { .. } = &settings.video.bitrate.mode {
+                                warn!("HTTP server collection is disabled but BRAVR is enabled. The agent will not use AP telemetry to guide its decisions.");
                             }
                         }
                     }
 
-                    if let BitrateMode::Sarsa { .. } = &settings.video.bitrate.mode {
-                        self.statistics_tab.enable_sarsa_stats();
+                    if let BitrateMode::Bravr { .. } = &settings.video.bitrate.mode {
+                        self.statistics_tab.enable_bravr_stats();
                     } else {
-                        self.statistics_tab.disable_sarsa_stats();
+                        self.statistics_tab.disable_bravr_stats();
                     }
 
                     self.session = Some(*session);

@@ -1,6 +1,6 @@
 use crate::{dashboard::theme::graph_colors, dashboard::ServerRequest};
 use alvr_common::{find_client_interface, APStats, Client, Interface};
-use alvr_events::{GraphNetworkStatistics, GraphStatistics, SARSAStats, StatisticsSummary};
+use alvr_events::{GraphNetworkStatistics, GraphStatistics, BRAVRStats, StatisticsSummary};
 use alvr_gui_common::theme;
 use eframe::{
     egui::{
@@ -14,7 +14,7 @@ use statrs::statistics::{self, OrderStatistics};
 use std::{collections::VecDeque, net::IpAddr, ops::RangeInclusive};
 
 const GRAPH_HISTORY_SIZE: usize = 1000;
-const GRAPH_HISTORY_SIZE_SARSA: usize = 100;
+const GRAPH_HISTORY_SIZE_BRAVR: usize = 100;
 const GRAPH_HISTORY_SIZE_AP: usize = 100;
 const UPPER_QUANTILE: f64 = 0.80;
 // const LOWER_QUANTILE: f64 = 0.2;
@@ -144,13 +144,13 @@ macro_rules! make_ap_custom_graph {
 pub struct StatisticsTab {
     history: VecDeque<GraphStatistics>,
     history_network: VecDeque<GraphNetworkStatistics>,
-    history_sarsa: VecDeque<SARSAStats>,
+    history_bravr: VecDeque<BRAVRStats>,
     history_ap: VecDeque<APStats>,
     last_statistics_summary: Option<StatisticsSummary>,
     client_ip: Option<IpAddr>,
     bulk_ap_stats: bool,
     ap_stats_enabled: bool,
-    sarsa_stats_enabled: bool,
+    bravr_stats_enabled: bool,
 }
 
 impl StatisticsTab {
@@ -162,7 +162,7 @@ impl StatisticsTab {
             history_network: vec![GraphNetworkStatistics::default(); GRAPH_HISTORY_SIZE]
                 .into_iter()
                 .collect(),
-            history_sarsa: vec![SARSAStats::default(); GRAPH_HISTORY_SIZE_SARSA]
+            history_bravr: vec![BRAVRStats::default(); GRAPH_HISTORY_SIZE_BRAVR]
                 .into_iter()
                 .collect(),
             history_ap: vec![APStats::default(); GRAPH_HISTORY_SIZE_AP]
@@ -172,7 +172,7 @@ impl StatisticsTab {
             client_ip: None,
             bulk_ap_stats: false,
             ap_stats_enabled: false,
-            sarsa_stats_enabled: false,
+            bravr_stats_enabled: false,
         }
     }
 
@@ -196,12 +196,12 @@ impl StatisticsTab {
         self.bulk_ap_stats = false;
     }
 
-    pub fn enable_sarsa_stats(&mut self) {
-        self.sarsa_stats_enabled = true;
+    pub fn enable_bravr_stats(&mut self) {
+        self.bravr_stats_enabled = true;
     }
 
-    pub fn disable_sarsa_stats(&mut self) {
-        self.sarsa_stats_enabled = false;
+    pub fn disable_bravr_stats(&mut self) {
+        self.bravr_stats_enabled = false;
     }
 
     pub fn update_statistics(&mut self, statistics: StatisticsSummary) {
@@ -218,9 +218,9 @@ impl StatisticsTab {
         self.history_network.push_back(statistics);
     }
 
-    pub fn update_sarsa_stats(&mut self, statistics: SARSAStats) {
-        self.history_sarsa.pop_front();
-        self.history_sarsa.push_back(statistics);
+    pub fn update_bravr_stats(&mut self, statistics: BRAVRStats) {
+        self.history_bravr.pop_front();
+        self.history_bravr.push_back(statistics);
     }
 
     pub fn update_ap_stats(&mut self, statistics: APStats) {
@@ -263,14 +263,14 @@ impl StatisticsTab {
                 self.draw_jitter(ui, available_width);
                 self.draw_frameloss(ui, available_width);
                 self.draw_frame_span_interarrival(ui, available_width);
-                if self.sarsa_stats_enabled {
+                if self.bravr_stats_enabled {
                     ui.separator();
-                    self.draw_sarsa_rewards(ui, available_width);
-                    self.draw_sarsa_reward_components(ui, available_width);
-                    self.draw_sarsa_td_error(ui, available_width);
-                    self.draw_sarsa_entropy(ui, available_width);
-                    self.draw_sarsa_q_values(ui, available_width);
-                    self.draw_sarsa_action_probs(ui, available_width);
+                    self.draw_bravr_rewards(ui, available_width);
+                    self.draw_bravr_reward_components(ui, available_width);
+                    self.draw_bravr_td_error(ui, available_width);
+                    self.draw_bravr_entropy(ui, available_width);
+                    self.draw_bravr_q_values(ui, available_width);
+                    self.draw_bravr_action_probs(ui, available_width);
                 }
                 ui.separator();
                 if self.ap_stats_enabled {
@@ -351,14 +351,14 @@ impl StatisticsTab {
         }
     }
 
-    fn draw_sarsa_graph(
+    fn draw_bravr_graph(
         &self,
         ui: &mut Ui,
         available_width: f32,
         title: &str,
         data_range: RangeInclusive<f32>,
         graph_content: impl FnOnce(&Painter, RectTransform),
-        tooltip_content: impl FnOnce(&mut Ui, &SARSAStats, Option<&SARSAStats>),
+        tooltip_content: impl FnOnce(&mut Ui, &BRAVRStats, Option<&BRAVRStats>),
     ) {
         ui.add_space(10.0);
         ui.label(RichText::new(title).size(20.0));
@@ -371,7 +371,7 @@ impl StatisticsTab {
             let max = *data_range.end();
             let min = *data_range.start();
 
-            let data_rect = Rect::from_x_y_ranges(0.0..=GRAPH_HISTORY_SIZE_SARSA as f32, max..=min);
+            let data_rect = Rect::from_x_y_ranges(0.0..=GRAPH_HISTORY_SIZE_BRAVR as f32, max..=min);
             let to_screen = RectTransform::from_to(data_rect, canvas_rect);
 
             let painter = ui.painter().with_clip_rect(canvas_rect);
@@ -399,14 +399,14 @@ impl StatisticsTab {
         if let Some(pos) = canvas_response.response.hover_pos() {
             let graph_pos =
                 RectTransform::from_to(canvas_response.response.rect, canvas_response.inner) * pos;
-            let history_index = (graph_pos.x as usize).clamp(0, GRAPH_HISTORY_SIZE_SARSA - 1);
+            let history_index = (graph_pos.x as usize).clamp(0, GRAPH_HISTORY_SIZE_BRAVR - 1);
 
-            if let Some(stats) = self.history_sarsa.get(history_index) {
+            if let Some(stats) = self.history_bravr.get(history_index) {
                 let prev = history_index
                     .checked_sub(1)
-                    .and_then(|i| self.history_sarsa.get(i));
+                    .and_then(|i| self.history_bravr.get(i));
 
-                popup::show_tooltip(ui.ctx(), Id::new("sarsa_popup"), |ui| {
+                popup::show_tooltip(ui.ctx(), Id::new("bravr_popup"), |ui| {
                     tooltip_content(ui, stats, prev)
                 });
             }
@@ -471,13 +471,13 @@ impl StatisticsTab {
         }
     }
 
-    fn draw_sarsa_td_error(&self, ui: &mut Ui, available_width: f32) {
-        if self.history_sarsa.is_empty() {
+    fn draw_bravr_td_error(&self, ui: &mut Ui, available_width: f32) {
+        if self.history_bravr.is_empty() {
             return;
         }
 
         let mut data = statistics::Data::new(
-            self.history_sarsa
+            self.history_bravr
                 .iter()
                 .map(|s| s.td_error.abs() as f64)
                 .collect::<Vec<_>>(),
@@ -486,16 +486,16 @@ impl StatisticsTab {
         let lower = 0.0;
         let upper = data.quantile(0.95) as f32;
 
-        self.draw_sarsa_graph(
+        self.draw_bravr_graph(
             ui,
             available_width,
-            "SARSA |TD Error|",
+            "BRAVR |TD Error|",
             lower..=upper,
             |painter, to_screen_trans| {
-                let mut points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
+                let mut points = Vec::with_capacity(GRAPH_HISTORY_SIZE_BRAVR);
 
-                for i in 0..GRAPH_HISTORY_SIZE_SARSA {
-                    let stats = &self.history_sarsa[i];
+                for i in 0..GRAPH_HISTORY_SIZE_BRAVR {
+                    let stats = &self.history_bravr[i];
                     points.push(to_screen_trans * pos2(i as f32, stats.td_error.abs()));
                 }
 
@@ -511,13 +511,13 @@ impl StatisticsTab {
         );
     }
 
-    fn draw_sarsa_entropy(&self, ui: &mut Ui, available_width: f32) {
-        if self.history_sarsa.is_empty() {
+    fn draw_bravr_entropy(&self, ui: &mut Ui, available_width: f32) {
+        if self.history_bravr.is_empty() {
             return;
         }
 
         let mut data = statistics::Data::new(
-            self.history_sarsa
+            self.history_bravr
                 .iter()
                 .map(|s| s.policy_entropy as f64)
                 .collect::<Vec<_>>(),
@@ -526,16 +526,16 @@ impl StatisticsTab {
         let lower = 0.0;
         let upper = data.quantile(1.0) as f32;
 
-        self.draw_sarsa_graph(
+        self.draw_bravr_graph(
             ui,
             available_width,
-            "SARSA Policy Entropy",
+            "BRAVR Policy Entropy",
             lower..=upper,
             |painter, to_screen_trans| {
-                let mut points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
+                let mut points = Vec::with_capacity(GRAPH_HISTORY_SIZE_BRAVR);
 
-                for i in 0..GRAPH_HISTORY_SIZE_SARSA {
-                    let stats = &self.history_sarsa[i];
+                for i in 0..GRAPH_HISTORY_SIZE_BRAVR {
+                    let stats = &self.history_bravr[i];
                     points.push(to_screen_trans * pos2(i as f32, stats.policy_entropy));
                 }
 
@@ -550,13 +550,13 @@ impl StatisticsTab {
         );
     }
 
-    fn draw_sarsa_q_values(&self, ui: &mut Ui, available_width: f32) {
-        if self.history_sarsa.is_empty() {
+    fn draw_bravr_q_values(&self, ui: &mut Ui, available_width: f32) {
+        if self.history_bravr.is_empty() {
             return;
         }
 
         let mut all_qs = Vec::new();
-        for s in &self.history_sarsa {
+        for s in &self.history_bravr {
             for q in &s.q_values {
                 all_qs.push(*q as f64);
             }
@@ -566,19 +566,19 @@ impl StatisticsTab {
         let lower = data.quantile(0.05) as f32;
         let upper = data.quantile(0.95) as f32;
 
-        let num_actions = self.history_sarsa[0].q_values.len();
+        let num_actions = self.history_bravr[0].q_values.len();
 
-        self.draw_sarsa_graph(
+        self.draw_bravr_graph(
             ui,
             available_width,
-            "SARSA Q-values",
+            "BRAVR Q-values",
             lower..=upper,
             |painter, to_screen_trans| {
                 for a in 0..num_actions {
-                    let mut points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
+                    let mut points = Vec::with_capacity(GRAPH_HISTORY_SIZE_BRAVR);
 
-                    for i in 0..GRAPH_HISTORY_SIZE_SARSA {
-                        let stats = &self.history_sarsa[i];
+                    for i in 0..GRAPH_HISTORY_SIZE_BRAVR {
+                        let stats = &self.history_bravr[i];
                         points.push(to_screen_trans * pos2(i as f32, stats.q_values[a]));
                     }
 
@@ -605,24 +605,24 @@ impl StatisticsTab {
         );
     }
 
-    fn draw_sarsa_action_probs(&self, ui: &mut Ui, available_width: f32) {
-        if self.history_sarsa.is_empty() {
+    fn draw_bravr_action_probs(&self, ui: &mut Ui, available_width: f32) {
+        if self.history_bravr.is_empty() {
             return;
         }
 
-        let num_actions = self.history_sarsa[0].action_probs.len();
+        let num_actions = self.history_bravr[0].action_probs.len();
 
-        self.draw_sarsa_graph(
+        self.draw_bravr_graph(
             ui,
             available_width,
-            "SARSA Action Probabilities",
+            "BRAVR Action Probabilities",
             0.0..=1.0,
             |painter, to_screen_trans| {
                 for a in 0..num_actions {
-                    let mut points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
+                    let mut points = Vec::with_capacity(GRAPH_HISTORY_SIZE_BRAVR);
 
-                    for i in 0..GRAPH_HISTORY_SIZE_SARSA {
-                        let stats = &self.history_sarsa[i];
+                    for i in 0..GRAPH_HISTORY_SIZE_BRAVR {
+                        let stats = &self.history_bravr[i];
                         let p = stats.action_probs[a];
                         points.push(to_screen_trans * pos2(i as f32, p));
                     }
@@ -650,13 +650,13 @@ impl StatisticsTab {
         );
     }
 
-    fn draw_sarsa_rewards(&self, ui: &mut Ui, available_width: f32) {
-        if self.history_sarsa.is_empty() {
+    fn draw_bravr_rewards(&self, ui: &mut Ui, available_width: f32) {
+        if self.history_bravr.is_empty() {
             return;
         }
 
         let mut data = statistics::Data::new(
-            self.history_sarsa
+            self.history_bravr
                 .iter()
                 .map(|s| s.r_prev as f64)
                 .collect::<Vec<_>>(),
@@ -665,16 +665,16 @@ impl StatisticsTab {
         let lower = data.quantile(0.05) as f32;
         let upper = data.quantile(1.0) as f32;
 
-        self.draw_sarsa_graph(
+        self.draw_bravr_graph(
             ui,
             available_width,
-            "SARSA Rewards",
+            "BRAVR Rewards",
             lower..=upper,
             |painter, to_screen_trans| {
-                let mut reward_points = Vec::with_capacity(GRAPH_HISTORY_SIZE_SARSA);
+                let mut reward_points = Vec::with_capacity(GRAPH_HISTORY_SIZE_BRAVR);
 
-                for i in 0..GRAPH_HISTORY_SIZE_SARSA {
-                    let stats = &self.history_sarsa[i];
+                for i in 0..GRAPH_HISTORY_SIZE_BRAVR {
+                    let stats = &self.history_bravr[i];
                     reward_points.push(to_screen_trans * pos2(i as f32, stats.r_prev));
                 }
 
@@ -700,12 +700,12 @@ impl StatisticsTab {
         );
     }
 
-    fn draw_sarsa_reward_components(&self, ui: &mut Ui, available_width: f32) {
-        if self.history_sarsa.is_empty() {
+    fn draw_bravr_reward_components(&self, ui: &mut Ui, available_width: f32) {
+        if self.history_bravr.is_empty() {
             return;
         }
 
-        let num_components = self.history_sarsa[0].r_components.len();
+        let num_components = self.history_bravr[0].r_components.len();
 
         // Predefined colors for each reward component
         let colors: Vec<Color32> = vec![
@@ -720,7 +720,7 @@ impl StatisticsTab {
         let labels = vec!["Bitrate", "NFR", "RTT", "Switching", "Fairness"];
 
         let mut all_values = Vec::new();
-        for snap in &self.history_sarsa {
+        for snap in &self.history_bravr {
             for v in &snap.r_components {
                 all_values.push(*v as f64);
             }
@@ -730,15 +730,15 @@ impl StatisticsTab {
         let lower = data.quantile(0.0) as f32;
         let upper = data.quantile(1.0) as f32;
 
-        let hist = &self.history_sarsa;
+        let hist = &self.history_bravr;
         let colors_paint = colors.clone();
         let colors_tooltip = colors.clone();
         let labels_tooltip = labels.clone();
 
-        self.draw_sarsa_graph(
+        self.draw_bravr_graph(
             ui,
             available_width,
-            "SARSA Reward Components",
+            "BRAVR Reward Components",
             lower..=upper,
             move |painter, to_screen_trans| {
                 let hist_len = hist.len();

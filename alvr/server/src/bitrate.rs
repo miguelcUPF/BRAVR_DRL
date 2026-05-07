@@ -1,12 +1,12 @@
 use crate::{
     ap_telemetry::{WifiMetrics, WifiStatsProcessor},
     learning_env::{LearningConfig, StreamingEnvironment, STATE_DIM},
-    sarsa_agent::{SarsaAgent, SarsaAgentConfig},
+    bravr_agent::{BravrAgent, BravrAgentConfig},
     FfiDynamicEncoderParams, FILESYSTEM_LAYOUT,
 };
 use alvr_common::{info, APStats, SlidingWindowAverage};
 use alvr_events::{
-    EnvironmentSnapshot, EventType, HeuristicStats, NominalBitrateStats, SARSAStats,
+    EnvironmentSnapshot, EventType, HeuristicStats, NominalBitrateStats, BRAVRStats,
 };
 use alvr_session::{
     get_profile_config, settings_schema::Switch, AveragingStrategy, BitrateAdaptiveFramerateConfig,
@@ -64,7 +64,7 @@ pub struct BitrateManager {
     bitrate_step_size_bps: f32,
     last_nest_settings: LastNestSettings,
 
-    // Learning interval accumulators (for sarsa)
+    // Learning interval accumulators (for bravr)
     rtt_samples_s: Vec<f32>,                // rtt
     frame_interval_samples_s: Vec<f32>,     // tx frame interval
     frame_interarrival_samples_s: Vec<f32>, // rx frame interval
@@ -72,9 +72,9 @@ pub struct BitrateManager {
     total_frame_interarrival_s: f32,        // total rx frame interval
 
     // Reinforcement learning components
-    sarsa_agent: Option<SarsaAgent>,
+    bravr_agent: Option<BravrAgent>,
     env: Option<StreamingEnvironment>,
-    sarsa_learning_enabled: bool,
+    bravr_learning_enabled: bool,
 
     // AP & WiFi handling
     max_ap_history: usize,
@@ -162,9 +162,9 @@ impl BitrateManager {
             bitrate_step_size_bps: 0.0,
             last_nest_settings: LastNestSettings::default(),
 
-            sarsa_agent: None,
+            bravr_agent: None,
             env: None,
-            sarsa_learning_enabled: false,
+            bravr_learning_enabled: false,
 
             max_ap_history,
             ap_stats_buffer: VecDeque::with_capacity(max_ap_history),
@@ -463,7 +463,7 @@ impl BitrateManager {
 
                     max_history_size = Some(*history_size);
                 }
-                BitrateMode::Sarsa {
+                BitrateMode::Bravr {
                     update_interval_s,
                     bitrate_levels_mbps,
                     nfr_target,
@@ -501,9 +501,9 @@ impl BitrateManager {
                     );
                     self.env = Some(StreamingEnvironment::new(env_config));
 
-                    let model_path_buf = FILESYSTEM_LAYOUT.sarsa_model();
+                    let model_path_buf = FILESYSTEM_LAYOUT.bravr_model();
                     let state_dim = STATE_DIM;
-                    self.sarsa_agent = Some(SarsaAgent::new(SarsaAgentConfig {
+                    self.bravr_agent = Some(BravrAgent::new(BravrAgentConfig {
                         gamma: agent_config.gamma,
                         lr: agent_config.lr,
                         tau: agent_config.tau,
@@ -519,7 +519,7 @@ impl BitrateManager {
                         save_model: agent_config.save_model,
                     }));
 
-                    self.enable_sarsa_learning();
+                    self.enable_bravr_learning();
                 }
                 _ => {
                     self.update_interval_s = UPDATE_INTERVAL;
@@ -830,13 +830,13 @@ impl BitrateManager {
 
                 bitrate_bps
             }
-            BitrateMode::Sarsa { .. } => {
-                if self.sarsa_learning_enabled {
+            BitrateMode::Bravr { .. } => {
+                if self.bravr_learning_enabled {
                     // Warmup period: if there is no valid data, return the current bitrate and wait for the next interval
                     if rtt_ms < 1.0 {
                         self.last_target_bitrate_bps
                     } else {
-                        if let (Some(agent), Some(env)) = (&mut self.sarsa_agent, &mut self.env) {
+                        if let (Some(agent), Some(env)) = (&mut self.bravr_agent, &mut self.env) {
                             // Agent snapshot enforces partial observability (depending on whether AP info use is enabled)
                             let mut agent_snap =
                                 raw_snap.masked_for_agent(agent.cfg.ap_info_enabled);
@@ -902,7 +902,7 @@ impl BitrateManager {
                                 * 1e6;
 
                             // 6. Stats
-                            let sarsa_stats = SARSAStats {
+                            let bravr_stats = BRAVRStats {
                                 s_prev: s_prev_str,                          // previous state
                                 a_prev_idx: a_prev_idx, // previous action index
                                 r_prev: reward,         // previous reward
@@ -917,7 +917,7 @@ impl BitrateManager {
                                 requested_bitrate_bps: new_bitrate_bps, // requested bitrate
                             };
 
-                            alvr_events::send_event(EventType::SARSAStats(sarsa_stats));
+                            alvr_events::send_event(EventType::BRAVRStats(bravr_stats));
 
                             new_bitrate_bps
                         } else {
@@ -954,30 +954,30 @@ impl BitrateManager {
         )
     }
 
-    pub fn save_sarsa_model(&mut self) {
-        if let Some(agent) = self.sarsa_agent.as_mut() {
+    pub fn save_bravr_model(&mut self) {
+        if let Some(agent) = self.bravr_agent.as_mut() {
             agent.finish_episode();
-            info!("SARSA: Saving model on disconnect (if enabled)...");
+            info!("BRAVR: Saving model on disconnect (if enabled)...");
             agent.save_to_disk();
         }
     }
 
-    pub fn disable_sarsa_learning(&mut self) {
-        self.sarsa_learning_enabled = false;
-        info!("SARSA learning disabled for client {}", self.client_ip);
+    pub fn disable_bravr_learning(&mut self) {
+        self.bravr_learning_enabled = false;
+        info!("BRAVR learning disabled for client {}", self.client_ip);
     }
 
-    pub fn enable_sarsa_learning(&mut self) {
-        self.sarsa_learning_enabled = true;
-        info!("SARSA learning (re-)enabled for client {}", self.client_ip);
+    pub fn enable_bravr_learning(&mut self) {
+        self.bravr_learning_enabled = true;
+        info!("BRAVR learning (re-)enabled for client {}", self.client_ip);
     }
 }
 
 impl Drop for BitrateManager {
     fn drop(&mut self) {
-        if let Some(agent) = self.sarsa_agent.as_mut() {
+        if let Some(agent) = self.bravr_agent.as_mut() {
             agent.finish_episode();
-            info!("SARSA: BitrateManager dropping. Saving model (if enabled)...");
+            info!("BRAVR: BitrateManager dropping. Saving model (if enabled)...");
             agent.save_to_disk();
         }
     }

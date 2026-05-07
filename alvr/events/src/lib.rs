@@ -135,7 +135,7 @@ pub struct HeuristicStats {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct SARSAStats {
+pub struct BRAVRStats {
     pub s_prev: String,          // Previous state (s_{t-1})
     pub a_prev_idx: Option<i64>, // Previous action index (a_{t-1})
     pub r_prev: f32,             // Previous reward (r_{t-1})
@@ -230,7 +230,7 @@ pub enum EventType {
     GraphStatistics(GraphStatistics),
     GraphNetworkStatistics(GraphNetworkStatistics),
     HeuristicStats(HeuristicStats),
-    SARSAStats(SARSAStats),
+    BRAVRStats(BRAVRStats),
     APStats(APStats),
     EnvironmentSnapshot(EnvironmentSnapshot),
     ClientIp(IpAddr),

@@ -606,7 +606,7 @@ fn connection_pipeline(
         BitrateMode::Adaptive { history_size, .. } => {
             max_history_size = Some(*history_size);
         }
-        BitrateMode::Sarsa {
+        BitrateMode::Bravr {
             bitrate_levels_mbps,
             ..
         } => {
@@ -1528,8 +1528,8 @@ fn connection_pipeline(
     lifecycle_check_thread.join().ok();
 
     {
-        BITRATE_MANAGER.lock().save_sarsa_model();
-        BITRATE_MANAGER.lock().disable_sarsa_learning();
+        BITRATE_MANAGER.lock().save_bravr_model();
+        BITRATE_MANAGER.lock().disable_bravr_learning();
     }
 
     Ok(())

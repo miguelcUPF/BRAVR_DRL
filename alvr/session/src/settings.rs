@@ -402,17 +402,17 @@ pub struct HTTPserver {
 }
 
 #[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq)]
-pub struct SARSAConfig {
+pub struct BRAVRConfig {
     #[schema(strings(
         display_name = "Load model on start",
-        help = "Attempts to load pre-trained weights from 'sarsa_model.safetensors'. If the file is missing, or if the network structure has changed (e.g. different Hidden Layer Size or Action Multipliers), the saved data is ignored and the agent starts learning from scratch."
+        help = "Attempts to load pre-trained weights from 'bravr_model.safetensors'. If the file is missing, or if the network structure has changed (e.g. different Hidden Layer Size or Action Multipliers), the saved data is ignored and the agent starts learning from scratch."
     ))]
     #[schema(flag = "steamvr-restart")]
     pub load_model: bool,
 
     #[schema(strings(
         display_name = "Save model on exit",
-        help = "Saves learned weights to 'sarsa_model.safetensors' upon exit or disconnect. WARNING: This overwrites the existing file. If you changed the network structure, your previous compatible model will be replaced by the new one."
+        help = "Saves learned weights to 'bravr_model.safetensors' upon exit or disconnect. WARNING: This overwrites the existing file. If you changed the network structure, your previous compatible model will be replaced by the new one."
     ))]
     #[schema(flag = "steamvr-restart")]
     pub save_model: bool,
@@ -481,7 +481,7 @@ pub struct SARSAConfig {
 
     #[schema(strings(
         display_name = "Hidden Layer Size",
-        help = "Number of neurons in the SARSA agent's hidden layer."
+        help = "Number of neurons in the BRAVR agent's hidden layer."
     ))]
     #[schema(flag = "steamvr-restart")]
     #[schema(gui(slider(min = 1, max = 512, step = 1)))]
@@ -556,8 +556,8 @@ pub enum BitrateMode {
         #[schema(flag = "real-time")]
         nest_vr_profile: NestVrProfile,
     },
-    #[schema(collapsible, strings(display_name = "n-step Expected D-SARSA"))]
-    Sarsa {
+    #[schema(collapsible, strings(display_name = "BRAVR-DRL"))]
+    Bravr {
         #[schema(strings(display_name = "Adjustment period (s)"))]
         #[schema(flag = "steamvr-restart")]
         #[schema(gui(slider(min = 0.1, max = 1.0, logarithmic)), suffix = "s")]
@@ -648,8 +648,8 @@ pub enum BitrateMode {
         #[schema(gui(slider(min = 0.0, max = 15.0, logarithmic)))]
         max_penalty_clamp: f32,
 
-        #[schema(strings(display_name = "SARSA agent configuration"))]
-        agent_config: SARSAConfig,
+        #[schema(strings(display_name = "BRAVR agent configuration"))]
+        agent_config: BRAVRConfig,
     },
 }
 
@@ -1620,7 +1620,7 @@ pub fn session_settings_default() -> SettingsDefault {
                             variant: NestVrProfileDefaultVariant::Custom,
                         },
                     },
-                    Sarsa: BitrateModeSarsaDefault {
+                    Bravr: BitrateModeBravrDefault {
                         gui_collapsed: true,
                         update_interval_s: 0.5,
                         bitrate_levels_mbps: VectorDefault {
@@ -1640,7 +1640,7 @@ pub fn session_settings_default() -> SettingsDefault {
                         w_switch: 0.20,
                         w_fairness: 0.0,
                         max_penalty_clamp: 10.0,
-                        agent_config: SARSAConfigDefault {
+                        agent_config: BRAVRConfigDefault {
                             load_model: false,
                             save_model: true,
                             action_shielding_enabled: true,
@@ -1654,7 +1654,7 @@ pub fn session_settings_default() -> SettingsDefault {
                             hidden_dim: 128,
                         },
                     },
-                    variant: BitrateModeDefaultVariant::Sarsa,
+                    variant: BitrateModeDefaultVariant::Bravr,
                 },
                 adapt_to_framerate: SwitchDefault {
                     enabled: false,

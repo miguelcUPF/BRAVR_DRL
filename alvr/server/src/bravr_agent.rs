@@ -6,7 +6,7 @@ use tch::{nn, nn::Module, nn::OptimizerConfig, Kind, Tensor};
 const N_ACTIONS: i64 = 3; // -1 = decrease, 0 = hold, 1 = increase
 
 #[derive(Clone, Debug)]
-pub struct SarsaAgentConfig {
+pub struct BravrAgentConfig {
     // Learning Hyperparameters
     pub gamma: f32,       // Discount factor (e.g., 0.99)
     pub lr: f64,          // Learning rate (e.g., 3e-4)
@@ -38,7 +38,7 @@ struct Transition {
     r: f32,     // Reward received at time t+1 (result of action a_t)
 }
 
-pub struct SarsaAgent {
+pub struct BravrAgent {
     pub device: tch::Device,
 
     // VarStores hold the weights
@@ -50,7 +50,7 @@ pub struct SarsaAgent {
     pub target_net: nn::Sequential, // Target Network (updated via Polyak averaging)
 
     pub opt: nn::Optimizer,
-    pub cfg: SarsaAgentConfig,
+    pub cfg: BravrAgentConfig,
 
     // N-Step Buffer: A FIFO queue to store history for N-step returns
     buffer: VecDeque<Transition>,
@@ -60,10 +60,10 @@ pub struct SarsaAgent {
     pub a_prev_idx: Option<i64>,
 }
 
-impl SarsaAgent {
+impl BravrAgent {
     /// Initialize SARSA agent with Deep Neural Function Approximation
     /// using a Double network approach (main + target) for stability.
-    pub fn new(cfg: SarsaAgentConfig) -> Self {
+    pub fn new(cfg: BravrAgentConfig) -> Self {
         let device = if tch::Cuda::is_available() {
             tch::Device::Cuda(0)
         } else {
@@ -81,28 +81,28 @@ impl SarsaAgent {
             let optimistic_value = 0.0; // A value higher than the max theoretical reward
             if let Some(out_bias) = vars.get_mut("out.bias") {
                 let _ = out_bias.fill_(optimistic_value);
-                info!("SARSA: Initialized output bias to {}", optimistic_value);
+                info!("BRAVR: Initialized output bias to {}", optimistic_value);
             } else {
-                warn!("SARSA: Could not find 'out.bias' for initialization!");
+                warn!("BRAVR: Could not find 'out.bias' for initialization!");
             }
 
             // Set the output weight to a small value close to 0
             if let Some(out_weight) = vars.get_mut("out.weight") {
                 let _ = out_weight.uniform_(-0.001, 0.001);
-                info!("SARSA: Initialized output weight to near 0.0");
+                info!("BRAVR: Initialized output weight to near 0.0");
             }
         });
 
         // Load existing model if requested
         if cfg.load_model {
             if cfg.model_path.exists() {
-                info!("SARSA: Loading model from {:?}", cfg.model_path);
+                info!("BRAVR: Loading model from {:?}", cfg.model_path);
                 if let Err(e) = vs.load(&cfg.model_path) {
-                    error!("SARSA: Failed to load model: {:?}", e);
+                    error!("BRAVR: Failed to load model: {:?}", e);
                 }
             } else {
                 warn!(
-                    "SARSA: Load enabled but file not found at {:?}",
+                    "BRAVR: Load enabled but file not found at {:?}",
                     cfg.model_path
                 );
             }
@@ -138,7 +138,7 @@ impl SarsaAgent {
     }
 
     /// Construct the MLP (Multi-Layer Perceptron)
-    fn build_net(p: &nn::Path, cfg: &SarsaAgentConfig) -> nn::Sequential {
+    fn build_net(p: &nn::Path, cfg: &BravrAgentConfig) -> nn::Sequential {
         nn::seq()
             .add(nn::linear(
                 p / "l1",
@@ -226,7 +226,7 @@ impl SarsaAgent {
             let q_vec: Vec<f32> = Vec::try_from(q_values.view([-1])).unwrap();
 
             if q_vec.iter().any(|x| x.is_nan()) {
-                warn!("SARSA: Network output contains NaN! q_vec: {:?}", q_vec);
+                warn!("BRAVR: Network output contains NaN! q_vec: {:?}", q_vec);
                 return (1, vec![0.0; 3], vec![0.0, 1.0, 0.0], 0.0, false);
             }
 
@@ -397,8 +397,8 @@ impl SarsaAgent {
         }
 
         match self.vs.save(&self.cfg.model_path) {
-            Ok(_) => info!("SARSA: Saved model to {:?}", self.cfg.model_path),
-            Err(e) => warn!("SARSA: Failed to save model: {:?}", e),
+            Ok(_) => info!("BRAVR: Saved model to {:?}", self.cfg.model_path),
+            Err(e) => warn!("BRAVR: Failed to save model: {:?}", e),
         }
     }
 }
