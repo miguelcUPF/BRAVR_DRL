@@ -1,4 +1,4 @@
-# BRAVR-DRL
+# BRAVR-DRL: AP-Assisted Deep Reinforcement Learning for VR Bitrate Adaptation over Wi-Fi
 
 `BRAVR-DRL` is a fork of [NeSt-VR](https://github.com/wn-upf/NeSt-VR), itself based on [ALVR](https://github.com/alvr-org/ALVR), developed by the **UPF Wireless Networking Research Group**.
 
@@ -117,11 +117,12 @@ These controls enable experimentation with streaming and rendering configuration
 
 ## Releases
 
-Each release provides a `.zip` package containing:
-- `alvr_streamer_server/` — Windows streamer/server binaries, including the ALVR dashboard executable (`.exe`),
-- `alvr_streamer_client/` — Android client APK for the VR headset (HMD).
+Each release provides:
 
-The Android APK must be installed directly on the headset.
+- `alvr_streamer_windows.zip` — Windows streamer/server binaries, including the ALVR dashboard executable (`.exe`).
+- `alvr_client_android.apk` — Android VR client.
+
+Linux builds can be obtained by [Building From Source](https://github.com/alvr-org/ALVR/wiki/Building-From-Source).
 
 ---
 
