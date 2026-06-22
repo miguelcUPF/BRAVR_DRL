@@ -1,16 +1,16 @@
 # BRAVR-DRL: AP-Assisted Deep Reinforcement Learning for VR Bitrate Adaptation over Wi-Fi
 
-`BRAVR-DRL` is a fork of [NeSt-VR](https://github.com/wn-upf/NeSt-VR), itself based on [ALVR](https://github.com/alvr-org/ALVR), developed by the **UPF Wireless Networking Research Group**.
+`BRAVR_DRL` is a fork of [NeSt-VR](https://github.com/wn-upf/NeSt-VR), itself based on [ALVR](https://github.com/alvr-org/ALVR), developed by the **UPF Wireless Networking Research Group**.
 
-The repository implements **BRAVR-DRL**, a decentralized access point-assisted deep reinforcement learning framework for online bitrate adaptation in interactive VR streaming over Wi-Fi.
+The repository implements **BRAVR**, a decentralized access point-assisted deep reinforcement learning framework for online bitrate adaptation in interactive VR streaming over Wi-Fi.
 
-The implementation accompanies the paper: ***TODO***
+The implementation accompanies the paper: ***BRAVR: An AP-Assisted Online DRL Mechanism for Interactive VR Bitrate Adaptation over Wi-Fi***
 
 ---
 
 ## Features
 
-### BRAVR-DRL bitrate adaptation
+### BRAVR bitrate adaptation
 
 This repository adds a new bitrate adaptation mode to the ALVR dashboard:
 
@@ -30,7 +30,7 @@ The framework enables cross-layer bitrate adaptation that jointly optimizes:
 
 ---
 
-##  BRAVR-DRL Configuration
+##  BRAVR Configuration
 
 ### Adaptation parameters
 
@@ -186,11 +186,7 @@ For additional troubleshooting information, refer to:
 
 ## Citation
 
-If you use this repository in your research, please cite:
-
-```bibtex
-TODO
-```
+If you use this repository in your research, please cite the paper ***BRAVR: An AP-Assisted Online DRL Mechanism for Interactive VR Bitrate Adaptation over Wi-Fi***.
 
 ---
 
@@ -204,10 +200,12 @@ This project builds upon:
 
 ## Research support
 
-This work was supported by:
-- the CHIST-ERA Wireless AI 2022 call MLDR project (ANR-23-CHR4-0005),
-- AEI and NCN under projects PCI2023-145958-2 and 2023/05/Y/ST7/00004,
-- Wi-XR PID2021-123995NB-I00,
-- TRUE-Wi-Fi PID2024-155470NB-I00 (MCIU/AEI/FEDER, UE),
-- MCIN/AEI under the María de Maeztu Units of Excellence Programme (CEX2021-001195-M),
-- and AGAUR ICREA Academia 00077.
+This work is supported by the following projects:
+
+- MLDR (Chist-ERA WAI 2022) PCI2023-145958-2 (MCIU/AEI/10.13039)
+- REALM (GA 101298050 European Union)
+- TRUE Wi-Fi PID2024-155470NB-I00 (MICIU/AEI/10,13039/501100011033/FEDER,UE)
+- ICREA Academia 2024 (00077 AGAUR)
+- MdM CEX2021-001195-M (MICIU/AEI/10.13039/501100011033)
+
+Views and opinions expressed are however those of the author(s) only and do not necessarily reflect those of the European Union. Neither the European Union nor the granting authority can be held responsible for them.
