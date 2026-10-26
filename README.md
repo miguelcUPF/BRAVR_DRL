@@ -208,4 +208,10 @@ This work is supported by the following projects:
 - ICREA Academia 2024 (00077 AGAUR)
 - MdM CEX2021-001195-M (MICIU/AEI/10.13039/501100011033)
 
-Views and opinions expressed are however those of the author(s) only and do not necessarily reflect those of the European Union. Neither the European Union nor the granting authority can be held responsible for them.
+<p align="center">
+  <img
+    src="images/research-funding-acknowledgements.png"
+    alt="Funding acknowledgements for MLDR, TRUE Wi-Fi and REALM, featuring the Ministerio de Ciencia, Innovación y Universidades, Agencia Estatal de Investigación, and European Union logos."    
+    width="650"
+  />
+</p>
